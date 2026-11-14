@@ -70,6 +70,11 @@ async def home() -> FileResponse:
     return FileResponse(BASE_DIR / "static" / "index.html")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> Response:
+    return Response(status_code=204)
+
+
 @app.get("/api/health")
 async def health() -> dict[str, str]:
     return {
