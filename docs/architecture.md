@@ -1,27 +1,28 @@
 # Architecture and data handling
 
-MandiVoice is a local web app with a small FastAPI server. The browser handles recording and the review interface. The server calls Gnani for transcription and optional Hindi speech synthesis, parses explicit order details, and calculates bill totals.
+MandiVoice is a local web app with a FastAPI server. The browser captures audio and provides the review form. The server delegates speech recognition to Gnani Prisma and transcript interpretation to Groq. It calculates the bill itself using decimal arithmetic.
 
 ## Request path
 
 1. The browser records up to 30 seconds of audio or accepts an audio file.
-2. It uploads the recording to `/api/transcribe`. The server reads `GNANI_API_KEY` from its environment and forwards the audio to Gnani Prisma v3.
-3. The browser displays the transcript and submits it to `/api/bills/parse`. The parser extracts only details it can identify from supported Hindi and English patterns. Missing values stay missing.
-4. The merchant reviews and edits the transcript and draft rows. For Hindi orders, `/api/orders/readback` can produce a Timbre v2.5 Hindi audio read-back of the displayed values.
-5. The calculate action remains disabled until the merchant confirms the review. `/api/bills/calculate` validates the submitted rows and returns decimal strings.
+2. It uploads the recording to `/api/transcribe`. The server reads `GNANI_API_KEY` and forwards the audio to Gnani Prisma v3.
+3. The browser displays the transcript and submits the text to `/api/orders/interpret`. The server reads `GROQ_API_KEY`, requests a strict structured response, and validates the result as an `OrderDraft`.
+4. The draft includes a short transcript quote for each extracted value. The server checks quotes against the transcript and returns an issue instead of a total when required evidence is absent or a field is incomplete.
+5. The merchant reviews the displayed values and edits the draft. A separate calculate request uses the reviewed values and requires explicit confirmation. Arithmetic is performed locally by the server; the language model does not calculate totals.
+6. For simple Hindi orders, `/api/orders/readback` can produce a Timbre Hindi audio read-back.
 
-## Financial behavior
+## Draft fields and calculations
 
-Speech recognition and parsing are fallible. Neither is a source of verified financial data. The person preparing the bill must compare item names, quantities, prices, and tax with the customer's order. Changing the transcript or a bill field clears the review confirmation.
+An order draft can contain several item lines, per-line or shared tax rates, tax-inclusive prices, discounts, free quantities, extra charges, returns, an earlier balance, payments received, round-off, and a customer GSTIN. The model must leave unclear values empty and ask for clarification. No tax rate is inferred from an item name.
 
-Arithmetic is deterministic. Each line amount is rounded to two decimal places using half-up rounding. GST is calculated on the rounded subtotal and rounded to two decimal places. The app does not determine which GST rate applies.
+Money is represented with `Decimal`, rounded to two places using half-up rounding. A line price marked inclusive of tax is divided by one plus its stated tax rate to derive the taxable amount. Discounts are applied before tax unless explicitly marked as after-tax. The response keeps gross amount due, prior balance, paid amount, and balance due separate. This is arithmetic behavior, not accounting or tax advice; have a qualified person verify the treatment of a real transaction.
 
-## Boundaries
+## Reliability boundary
 
-- There is no payment connection, durable invoice storage, product catalog, customer ledger, or multi-user authentication.
-- The parser covers common short order phrases. It does not resolve ambiguous speech or invent prices.
-- The development server has no login or internet deployment protections. Keep it bound to loopback.
+Groq strict structured output constrains the response shape. It does not prove the model interpreted a phrase correctly. An evidence quote can also be valid while the selected interpretation is wrong. The interface therefore keeps the transcript visible, shows source phrases, requires human confirmation, and provides manual entry. It cannot promise 100% interpretation accuracy for arbitrary accents, code-mixing, noisy recordings, or ambiguous orders.
 
 ## Secrets and recordings
 
-The `.env` file is local configuration and excluded from Git. Browser requests go to the local server; the API key is never sent to browser code or returned by health checks. Audio sent for transcription and speech synthesis is processed by Gnani. MandiVoice does not store recordings or bill history. Use synthetic information in public demonstrations.
+The ignored `.env` file contains separate `GNANI_API_KEY` and `GROQ_API_KEY` values. Keys stay on the server and are not included in browser code or health responses. Audio goes to Gnani for transcription. Transcript text, potentially including customer identifiers, prices, payments, and tax details, goes to Groq. Review both providers' current data policies before processing real customer information. MandiVoice does not store recordings or bill history.
+
+The development server has no login or public deployment protections. Keep it bound to loopback; it is not ready for public hosting as-is.

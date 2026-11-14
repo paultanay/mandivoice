@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.gnani import GnaniAPIError
 from app.main import app
+from app.order_models import OrderDraft
 
 client = TestClient(app)
 
@@ -139,11 +140,142 @@ def test_transcription_rejects_audio_larger_than_limit(monkeypatch):
 
 def test_health_reports_configuration_without_disclosing_key(monkeypatch):
     monkeypatch.setenv("GNANI_API_KEY", "private-test-key")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "transcription": "configured"}
+    assert response.json() == {
+        "status": "ok",
+        "transcription": "configured",
+        "order_interpretation": "not_configured",
+    }
     assert "private-test-key" not in response.text
+
+
+def _interpreted_rice_draft(clarifications=None):
+    return OrderDraft.model_validate(
+        {
+            "language_code": "en-IN",
+            "currency": "INR",
+            "lines": [
+                {
+                    "name": "Rice",
+                    "name_evidence": "rice",
+                    "quantity": "2",
+                    "quantity_evidence": "2 kg",
+                    "unit": "kg",
+                    "unit_evidence": "kg",
+                    "pack_size": None,
+                    "pack_size_evidence": None,
+                    "unit_price": "60",
+                    "unit_price_evidence": "at 60",
+                    "price_basis": "unit",
+                    "tax_rate_percent": None,
+                    "tax_evidence": None,
+                    "tax_inclusive": False,
+                    "discount_kind": "none",
+                    "discount_value": None,
+                    "discount_evidence": None,
+                    "free_quantity": "0",
+                    "free_quantity_evidence": None,
+                    "source_quote": "2 kg rice at 60",
+                }
+            ],
+            "default_tax_rate_percent": None,
+            "tax_evidence": None,
+            "order_discount_kind": "none",
+            "order_discount_value": None,
+            "order_discount_after_tax": False,
+            "order_discount_evidence": None,
+            "charges": [],
+            "returns": [],
+            "previous_balance": None,
+            "previous_balance_evidence": None,
+            "payments": [],
+            "round_off": False,
+            "round_off_evidence": None,
+            "customer_gstin": None,
+            "customer_gstin_evidence": None,
+            "clarifications": clarifications or [],
+        }
+    )
+
+
+def test_order_interpret_requires_groq_key(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    response = client.post(
+        "/api/orders/interpret", json={"transcript": "2 kg rice at 60"}
+    )
+
+    assert response.status_code == 503
+    assert "GROQ_API_KEY" in response.json()["detail"]
+
+
+def test_order_interpret_returns_draft_and_deterministic_total(monkeypatch):
+    from app import main
+
+    monkeypatch.setenv("GROQ_API_KEY", "private-groq-key")
+
+    async def fake_extract_order(transcript, api_key, model):
+        assert transcript == "2 kg rice at 60"
+        assert api_key == "private-groq-key"
+        assert model
+        return _interpreted_rice_draft()
+
+    monkeypatch.setattr(main, "extract_order", fake_extract_order)
+    response = client.post(
+        "/api/orders/interpret", json={"transcript": "2 kg rice at 60"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready_for_review"
+    assert response.json()["calculation"]["gross_due"] == "120.00"
+    assert "private-groq-key" not in response.text
+
+
+def test_order_interpret_never_calculates_with_open_clarifications(monkeypatch):
+    from app import main
+
+    monkeypatch.setenv("GROQ_API_KEY", "private-groq-key")
+
+    async def fake_extract_order(transcript, api_key, model):
+        return _interpreted_rice_draft(
+            ["Was the price ₹60 per kg or for the full line?"]
+        )
+
+    monkeypatch.setattr(main, "extract_order", fake_extract_order)
+    response = client.post(
+        "/api/orders/interpret", json={"transcript": "2 kg rice at 60"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "needs_clarification"
+    assert response.json()["calculation"] is None
+
+
+def test_order_calculate_requires_review_confirmation():
+    response = client.post(
+        "/api/orders/calculate",
+        json={
+            "draft": _interpreted_rice_draft().model_dump(),
+            "review_confirmed": False,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "review" in response.json()["detail"].lower()
+
+
+def test_order_calculate_accepts_reviewed_field_changes():
+    draft = _interpreted_rice_draft().model_dump()
+    draft["lines"][0]["quantity"] = "3"
+    response = client.post(
+        "/api/orders/calculate",
+        json={"draft": draft, "review_confirmed": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["gross_due"] == "180.00"
 
 
 def test_calculate_endpoint_bounds_input_size():

@@ -18,6 +18,8 @@ let recordingTimer = null;
 let audioDurationValid = true;
 let detectedLanguageCode = null;
 let readbackUrl = "";
+let activeOrderDraft = null;
+let interpretationIssues = [];
 
 $("billDate").textContent = new Intl.DateTimeFormat("en-IN", {
   day: "numeric", month: "short", year: "numeric",
@@ -81,9 +83,18 @@ function updateReviewControls() {
   const complete = rows.length > 0 && rows.every((row) =>
     [...row.querySelectorAll("input")].every((input) => input.value.trim()),
   );
-  $("calculateButton").disabled = !complete || !$("confirmOrder").checked;
+  const hasOpenQuestions = Boolean(
+    activeOrderDraft?.clarifications?.length || interpretationIssues.length,
+  );
+  $("calculateButton").disabled = !complete || !$("confirmOrder").checked || hasOpenQuestions;
   const hindiTranscript = detectedLanguageCode === "hi-IN" || /[\u0900-\u097f]/.test(transcriptField.value);
-  $("readbackButton").disabled = !rows.length || !hindiTranscript;
+  const advancedOrder = activeOrderDraft && (
+    activeOrderDraft.charges.length || activeOrderDraft.returns.length || activeOrderDraft.payments.length ||
+    activeOrderDraft.order_discount_kind !== "none" || activeOrderDraft.lines.some((line) =>
+      line.tax_inclusive || line.discount_kind !== "none" || Number(line.free_quantity || 0) > 0,
+    )
+  );
+  $("readbackButton").disabled = !rows.length || !hindiTranscript || Boolean(advancedOrder);
 }
 
 function resetReviewState() {
@@ -93,6 +104,10 @@ function resetReviewState() {
 }
 
 function discardDraftForTranscriptEdit() {
+  activeOrderDraft = null;
+  interpretationIssues = [];
+  $("orderDetails").hidden = true;
+  $("orderDetails").replaceChildren();
   if (!lineItems.querySelector(".item-row")) return;
   lineItems.replaceChildren();
   showEmptyItems();
@@ -255,9 +270,10 @@ transcriptField.addEventListener("input", () => {
   discardDraftForTranscriptEdit();
 });
 
-function addLineItem(item = {}) {
+function addLineItem(item = {}, sourceLine = null, draftIndex = null) {
   const row = document.createElement("div");
   row.className = "item-row";
+  if (draftIndex !== null) row.dataset.draftIndex = String(draftIndex);
   for (const field of [
     { key: "name", label: "Item name", placeholder: "Item" },
     { key: "quantity", label: "Quantity", placeholder: "1", numeric: true },
@@ -273,6 +289,12 @@ function addLineItem(item = {}) {
     input.dataset.key = field.key;
     input.setAttribute("aria-label", field.label);
     row.append(input);
+  }
+  if (sourceLine?.source_quote) {
+    const evidence = document.createElement("small");
+    evidence.className = "item-evidence";
+    evidence.textContent = `Heard: “${sourceLine.source_quote}”`;
+    row.append(evidence);
   }
   const remove = document.createElement("button");
   remove.className = "remove-item"; remove.type = "button"; remove.textContent = "×";
@@ -292,43 +314,261 @@ showEmptyItems();
 
 $("addItemButton").addEventListener("click", () => {
   if (lineItems.querySelector(".empty-items")) lineItems.innerHTML = "";
+  if (activeOrderDraft) {
+    activeOrderDraft.lines.push({
+      name: "", name_evidence: "", quantity: "", quantity_evidence: null, unit: null,
+      unit_evidence: null, pack_size: null, pack_size_evidence: null, unit_price: "",
+      unit_price_evidence: null, price_basis: "unit", tax_rate_percent: null,
+      tax_evidence: null, tax_inclusive: false, discount_kind: "none",
+      discount_value: null, discount_evidence: null, free_quantity: "0",
+      free_quantity_evidence: null, source_quote: "",
+    });
+    const index = activeOrderDraft.lines.length - 1;
+    addLineItem({}, null, index).querySelector("input").focus();
+    showOrderDetails({ status: "ready_for_review", draft: activeOrderDraft });
+    return;
+  }
   addLineItem().querySelector("input").focus();
 });
 
+function addDraftEditor(entry, label, value, onChange, options = {}) {
+  const field = document.createElement("label");
+  field.className = "order-edit-field";
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  field.append(caption);
+  let input;
+  if (options.choices) {
+    input = document.createElement("select");
+    for (const choice of options.choices) {
+      const option = document.createElement("option");
+      option.value = choice.value;
+      option.textContent = choice.label;
+      input.append(option);
+    }
+  } else if (options.checkbox) {
+    input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = Boolean(value);
+  } else {
+    input = document.createElement("input");
+    input.type = options.numeric ? "number" : "text";
+    input.value = value ?? "";
+    if (options.numeric) {
+      input.min = "0";
+      input.step = "any";
+      input.inputMode = "decimal";
+    }
+  }
+  input.addEventListener("input", () => {
+    onChange(options.checkbox ? input.checked : input.value.trim() || null);
+    $("confirmOrder").checked = false;
+    clearReadback();
+    updateReviewControls();
+  });
+  input.addEventListener("change", () => {
+    onChange(options.checkbox ? input.checked : input.value.trim() || null);
+    $("confirmOrder").checked = false;
+    updateReviewControls();
+  });
+  field.append(input);
+  entry.append(field);
+}
+
+function appendOrderDetail(list, label, quote = "", editors = null, removeAction = null) {
+  const entry = document.createElement("li");
+  entry.textContent = label;
+  if (quote) {
+    const evidence = document.createElement("small");
+    evidence.className = "order-detail-quote";
+    evidence.textContent = `Heard: “${quote}”`;
+    entry.append(evidence);
+  }
+  if (editors) {
+    const grid = document.createElement("div");
+    grid.className = "order-edit-grid";
+    for (const editor of editors) addDraftEditor(grid, ...editor);
+    entry.append(grid);
+  }
+  if (removeAction) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "order-remove-action";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      removeAction();
+      $("confirmOrder").checked = false;
+      showOrderDetails({ status: "ready_for_review", draft });
+      updateReviewControls();
+    });
+    entry.append(remove);
+  }
+  list.append(entry);
+}
+
+function appendDraftAction(list, label, action) {
+  const entry = document.createElement("li");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "order-add-action";
+  button.textContent = label;
+  button.addEventListener("click", () => {
+    action();
+    $("confirmOrder").checked = false;
+    showOrderDetails({ status: "ready_for_review", draft: activeOrderDraft });
+    updateReviewControls();
+  });
+  entry.append(button);
+  list.append(entry);
+}
+
+function showOrderDetails(body) {
+  const panel = $("orderDetails");
+  panel.replaceChildren();
+  panel.hidden = false;
+  panel.classList.toggle("structured-order", Boolean(body.draft));
+  const heading = document.createElement("p");
+  heading.className = "order-detail-heading";
+  heading.textContent = body.status === "ready_for_review" ? "Structured draft. Check every value." : "Review needed before a total can be trusted.";
+  panel.append(heading);
+  const list = document.createElement("ul");
+  list.className = "order-detail-list";
+  const draft = body.draft;
+  for (const [index, line] of draft.lines.entries()) {
+    const unitPrice = line.price_basis === "line_total" ? "line total" : `per ${line.price_basis || "unit"}`;
+    let description = `${line.name}: ${line.quantity ?? "quantity missing"} ${line.unit || ""} at ₹${line.unit_price ?? "price missing"} ${unitPrice}`;
+    if (line.pack_size) description += `; pack size ${line.pack_size}`;
+    if (line.tax_rate_percent !== null) description += `; GST ${line.tax_rate_percent}%${line.tax_inclusive ? " included" : " added"}`;
+    else if (draft.default_tax_rate_percent !== null) description += `; GST ${draft.default_tax_rate_percent}%`;
+    if (line.discount_kind !== "none") description += `; discount ${line.discount_value} ${line.discount_kind}`;
+    if (Number(line.free_quantity || 0) > 0) description += `; ${line.free_quantity} free`;
+    appendOrderDetail(list, description, line.source_quote, [
+      ["Unit", line.unit, (value) => { line.unit = value; }],
+      ["Package size", line.pack_size, (value) => { line.pack_size = value; }],
+      ["Price basis", line.price_basis, (value) => { line.price_basis = value; }, { choices: [
+        { value: "unit", label: "Per unit" }, { value: "pack", label: "Per pack" }, { value: "line_total", label: "Line total" },
+      ] }],
+      ["Item GST %", line.tax_rate_percent, (value) => { line.tax_rate_percent = value; }, { numeric: true }],
+      ["Price includes GST", line.tax_inclusive, (value) => { line.tax_inclusive = value; }, { checkbox: true }],
+      ["Discount type", line.discount_kind, (value) => { line.discount_kind = value; }, { choices: [
+        { value: "none", label: "No discount" }, { value: "percent", label: "Percent" }, { value: "amount", label: "Rupees" },
+      ] }],
+      ["Discount value", line.discount_value, (value) => { line.discount_value = value; }, { numeric: true }],
+      ["Free quantity", line.free_quantity, (value) => { line.free_quantity = value || "0"; }, { numeric: true }],
+    ]);
+  }
+  {
+    appendOrderDetail(list, `Order discount: ${draft.order_discount_value ?? "none"} ${draft.order_discount_kind}`, draft.order_discount_evidence, [
+      ["Discount type", draft.order_discount_kind, (value) => { draft.order_discount_kind = value; }, { choices: [
+        { value: "none", label: "No discount" }, { value: "percent", label: "Percent" }, { value: "amount", label: "Rupees" },
+      ] }],
+      ["Discount value", draft.order_discount_value, (value) => { draft.order_discount_value = value; }, { numeric: true }],
+      ["Apply after tax", draft.order_discount_after_tax, (value) => { draft.order_discount_after_tax = value; }, { checkbox: true }],
+      ["Round bill to rupee", draft.round_off, (value) => { draft.round_off = value; }, { checkbox: true }],
+    ]);
+  }
+  for (const [index, charge] of draft.charges.entries()) appendOrderDetail(list, `Charge: ${charge.name}, ₹${charge.amount ?? "missing"}`, charge.source_quote, [
+    ["Charge name", charge.name, (value) => { charge.name = value || "Other charge"; }],
+    ["Amount", charge.amount, (value) => { charge.amount = value; }, { numeric: true }],
+    ["Tax rate %", charge.tax_rate_percent, (value) => { charge.tax_rate_percent = value; }, { numeric: true }],
+    ["Amount includes tax", charge.tax_inclusive, (value) => { charge.tax_inclusive = value; }, { checkbox: true }],
+  ], () => draft.charges.splice(index, 1));
+  for (const [index, returned] of draft.returns.entries()) appendOrderDetail(list, `Return: ${returned.name}, ₹${returned.amount ?? "missing"}`, returned.source_quote, [
+    ["Return name", returned.name, (value) => { returned.name = value || "Returned goods"; }],
+    ["Amount", returned.amount, (value) => { returned.amount = value; }, { numeric: true }],
+    ["Tax rate %", returned.tax_rate_percent, (value) => { returned.tax_rate_percent = value; }, { numeric: true }],
+    ["Amount includes tax", returned.tax_inclusive, (value) => { returned.tax_inclusive = value; }, { checkbox: true }],
+  ], () => draft.returns.splice(index, 1));
+  if (draft.previous_balance !== null) appendOrderDetail(list, `Previous balance: ₹${draft.previous_balance}`, draft.previous_balance_evidence, [
+    ["Previous balance", draft.previous_balance, (value) => { draft.previous_balance = value; }, { numeric: true }],
+  ], () => { draft.previous_balance = null; draft.previous_balance_evidence = null; });
+  for (const [index, payment] of draft.payments.entries()) appendOrderDetail(list, `Payment: ${payment.method}, ₹${payment.amount ?? "missing"}`, payment.source_quote, [
+    ["Payment method", payment.method, (value) => { payment.method = value || "other"; }],
+    ["Amount received", payment.amount, (value) => { payment.amount = value; }, { numeric: true }],
+  ], () => draft.payments.splice(index, 1));
+  if (draft.customer_gstin !== null) appendOrderDetail(list, `Customer GSTIN: ${draft.customer_gstin}`, draft.customer_gstin_evidence, [
+    ["Customer GSTIN", draft.customer_gstin, (value) => { draft.customer_gstin = value; }],
+  ], () => { draft.customer_gstin = null; draft.customer_gstin_evidence = null; });
+  appendDraftAction(list, "Add charge", () => draft.charges.push({
+    name: "", amount: null, tax_rate_percent: null, tax_inclusive: false, source_quote: "",
+  }));
+  appendDraftAction(list, "Add return", () => draft.returns.push({
+    name: "", amount: null, tax_rate_percent: null, tax_inclusive: false, source_quote: "",
+  }));
+  appendDraftAction(list, "Add payment", () => draft.payments.push({
+    method: "other", amount: null, source_quote: "",
+  }));
+  if (draft.previous_balance === null) {
+    appendDraftAction(list, "Add previous balance", () => {
+      draft.previous_balance = "0";
+      draft.previous_balance_evidence = null;
+    });
+  }
+  if (draft.customer_gstin === null) {
+    appendDraftAction(list, "Add customer GSTIN", () => {
+      draft.customer_gstin = "";
+      draft.customer_gstin_evidence = null;
+    });
+  }
+  if (!draft.lines.length) appendOrderDetail(list, "No complete item was extracted. Add an item or switch to manual entry.");
+  panel.append(list);
+  if (draft.clarifications.length || interpretationIssues.length) {
+    const issues = document.createElement("ul");
+    issues.className = "order-issues";
+    for (const question of [...draft.clarifications, ...interpretationIssues]) appendOrderDetail(issues, question);
+    panel.append(issues);
+  }
+  if (draft.clarifications.length || interpretationIssues.length) {
+    const manual = document.createElement("button");
+    manual.type = "button";
+    manual.className = "button button-quiet manual-order-button";
+    manual.textContent = "Discard this draft and enter manually";
+    manual.addEventListener("click", () => {
+      activeOrderDraft = null;
+      interpretationIssues = [];
+      panel.hidden = true;
+      lineItems.replaceChildren();
+      showEmptyItems();
+      $("gstRate").value = "0";
+      resetReviewState();
+      $("addItemButton").click();
+    });
+    panel.append(manual);
+  }
+}
+
 async function parseAndApply(transcript) {
-  const response = await fetch("/api/bills/parse", {
+  const response = await fetch("/api/orders/interpret", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ transcript }),
   });
   const body = await response.json();
   if (!response.ok) throw new Error(responseMessage(body, "Could not read this transcript."));
-  if (!body.items.length) {
-    lineItems.replaceChildren();
-    showEmptyItems();
-    $("gstRate").value = "0";
-    $("subtotal").textContent = "₹0.00";
-    $("gstAmount").textContent = "₹0.00";
-    $("total").textContent = "₹0.00";
-    resetReviewState();
-    showMessage($("transcribeMessage"), "Transcript ready, but no complete item was clear enough to add. Enter the missing details below.");
-    return;
-  }
+  activeOrderDraft = body.draft;
+  interpretationIssues = body.issues || [];
+  if (!activeOrderDraft) throw new Error("The order service returned no draft.");
   lineItems.replaceChildren();
-  body.items.forEach(addLineItem);
-  if (body.gst_percent !== null && body.gst_percent !== undefined) {
-    $("gstRate").value = body.gst_percent;
-  } else {
-    $("gstRate").value = "0";
-  }
-  $("subtotal").textContent = "₹0.00";
-  $("gstAmount").textContent = "₹0.00";
-  $("total").textContent = "₹0.00";
+  activeOrderDraft.lines.forEach((line, index) => {
+    addLineItem({ name: line.name, quantity: line.quantity, unit_price: line.unit_price }, line, index);
+  });
+  if (!activeOrderDraft.lines.length) showEmptyItems();
+  $("gstRate").value = activeOrderDraft.default_tax_rate_percent || "0";
   detectedLanguageCode = detectedLanguageCode || (/^[\u0900-\u097f\s.,!?;:]+$/.test(transcript) ? "hi-IN" : null);
+  if (body.calculation) {
+    $("subtotal").textContent = formatRupees(body.calculation.subtotal);
+    $("gstAmount").textContent = formatRupees(body.calculation.tax_amount);
+    $("total").textContent = formatRupees(body.calculation.amount_due);
+  } else {
+    $("subtotal").textContent = "—";
+    $("gstAmount").textContent = "—";
+    $("total").textContent = "—";
+  }
+  showOrderDetails(body);
   resetReviewState();
-  const itemSummary = body.items.map((item) => `${item.quantity} × ${item.name} at ₹${item.unit_price}`).join(", ");
-  const taxSummary = body.gst_percent ? ` GST ${body.gst_percent}%.` : "";
-  showMessage($("transcribeMessage"), `Draft extracted: ${itemSummary}.${taxSummary} Check every value before calculating.`);
+  showMessage($("transcribeMessage"), body.status === "ready_for_review"
+    ? "Order structured. Check the values and source phrases before confirming."
+    : "The transcript is ready, but the draft needs clarification or a manual correction.");
 }
 
 $("parseButton").addEventListener("click", async () => {
@@ -351,7 +591,8 @@ $("parseButton").addEventListener("click", async () => {
 
 function formatRupees(value) { return `₹${value}`; }
 async function calculateBill() {
-  const items = [...lineItems.querySelectorAll(".item-row")].map((row) => Object.fromEntries(
+  const rows = [...lineItems.querySelectorAll(".item-row")];
+  const items = rows.map((row) => Object.fromEntries(
     [...row.querySelectorAll("input")].map((input) => [input.dataset.key, input.value.trim()]),
   ));
   if (!items.length) {
@@ -360,15 +601,47 @@ async function calculateBill() {
   if (!$("confirmOrder").checked) {
     throw new Error("Review the transcript and line items, then check the confirmation box.");
   }
-  const response = await fetch("/api/bills/calculate", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ items, gst_percent: $("gstRate").value || "0" }),
-  });
+  let response;
+  if (activeOrderDraft) {
+    const previousLines = activeOrderDraft.lines;
+    activeOrderDraft.lines = items.map((item, index) => {
+      const row = rows[index];
+      const draftIndex = Number(row?.dataset.draftIndex);
+      const original = Number.isInteger(draftIndex) ? previousLines[draftIndex] : null;
+      if (row) row.dataset.draftIndex = String(index);
+      return {
+        ...(original || {
+          name_evidence: "", quantity_evidence: null, unit: null, unit_evidence: null,
+          pack_size: null, pack_size_evidence: null, unit_price_evidence: null,
+          price_basis: "unit", tax_rate_percent: null, tax_evidence: null,
+          tax_inclusive: false, discount_kind: "none", discount_value: null,
+          discount_evidence: null, free_quantity: "0", free_quantity_evidence: null,
+          source_quote: "",
+        }),
+        name: item.name,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+      };
+    });
+    activeOrderDraft.default_tax_rate_percent = $("gstRate").value || null;
+    response = await fetch("/api/orders/calculate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draft: activeOrderDraft, review_confirmed: true }),
+    });
+  } else {
+    response = await fetch("/api/bills/calculate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items, gst_percent: $("gstRate").value || "0" }),
+    });
+  }
   const body = await response.json();
   if (!response.ok) throw new Error(responseMessage(body, "Check the item details and try again."));
   $("subtotal").textContent = formatRupees(body.subtotal);
-  $("gstAmount").textContent = formatRupees(body.gst_amount);
-  $("total").textContent = formatRupees(body.total);
+  $("gstAmount").textContent = formatRupees(body.tax_amount ?? body.gst_amount);
+  $("total").textContent = formatRupees(body.amount_due ?? body.total);
+  if (activeOrderDraft) {
+    showOrderDetails({ status: "ready_for_review", draft: activeOrderDraft, calculation: body, issues: [] });
+  }
   showMessage($("billMessage"), "");
 }
 $("confirmOrder").addEventListener("change", updateReviewControls);

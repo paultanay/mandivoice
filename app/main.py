@@ -11,8 +11,10 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app.billing import calculate_bill
+from app.billing import calculate_bill, calculate_order
 from app.gnani import GnaniAPIError, synthesize_hindi, transcribe_audio
+from app.order_extractor import OrderExtractionError, extract_order
+from app.order_models import OrderDraft
 from app.order_parser import build_hindi_readback, parse_order
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -44,6 +46,15 @@ class ParseRequest(BaseModel):
     transcript: str = Field(max_length=4000)
 
 
+class OrderInterpretRequest(BaseModel):
+    transcript: str = Field(min_length=1, max_length=4000)
+
+
+class OrderCalculateRequest(BaseModel):
+    draft: OrderDraft
+    review_confirmed: bool
+
+
 class BillRequest(BaseModel):
     items: list[LineItem] = Field(max_length=50)
     gst_percent: str = Field(default="0", max_length=12)
@@ -66,12 +77,77 @@ async def health() -> dict[str, str]:
         "transcription": "configured"
         if os.getenv("GNANI_API_KEY", "").strip()
         else "not_configured",
+        "order_interpretation": "configured"
+        if os.getenv("GROQ_API_KEY", "").strip()
+        else "not_configured",
     }
 
 
 @app.post("/api/bills/parse")
 async def parse(request: ParseRequest) -> dict[str, object]:
     return parse_order(request.transcript)
+
+
+@app.post("/api/orders/interpret")
+async def interpret_order(request: OrderInterpretRequest) -> dict[str, object]:
+    provider = os.getenv("ORDER_LLM_PROVIDER", "groq").strip().lower()
+    if provider != "groq":
+        raise HTTPException(
+            status_code=503,
+            detail="Set ORDER_LLM_PROVIDER to groq or leave it unset.",
+        )
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Set GROQ_API_KEY in your local .env to interpret orders.",
+        )
+    model = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b").strip()
+    if not model:
+        raise HTTPException(
+            status_code=503, detail="Set GROQ_MODEL to a supported model."
+        )
+
+    try:
+        draft = await extract_order(request.transcript, api_key, model)
+    except OrderExtractionError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from None
+
+    if draft.clarifications:
+        return {
+            "status": "needs_clarification",
+            "draft": draft.model_dump(),
+            "calculation": None,
+            "issues": draft.clarifications,
+        }
+    try:
+        calculation = calculate_order(draft, transcript=request.transcript)
+    except ValueError as error:
+        return {
+            "status": "needs_review",
+            "draft": draft.model_dump(),
+            "calculation": None,
+            "issues": [str(error)],
+        }
+    return {
+        "status": "ready_for_review",
+        "draft": draft.model_dump(),
+        "calculation": calculation,
+        "issues": [],
+    }
+
+
+@app.post("/api/orders/calculate")
+async def calculate_order_endpoint(request: OrderCalculateRequest) -> dict[str, object]:
+    if not request.review_confirmed:
+        raise HTTPException(
+            status_code=422,
+            detail="Review the transcript and order draft before calculating.",
+        )
+    try:
+        return calculate_order(request.draft)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
 
 
 @app.post("/api/bills/calculate")
