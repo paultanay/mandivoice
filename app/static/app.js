@@ -88,14 +88,60 @@ function clearReadback() {
   $("readbackAudio").hidden = true;
 }
 
+function getOpenClarifications(draft, items) {
+  const lines = draft?.lines || [];
+  const questions = draft?.clarifications || [];
+  return [...new Set(questions)].filter((question) => {
+    const normalized = question.toLocaleLowerCase();
+    const matchingIndices = lines.flatMap((line, index) =>
+      line.name && normalized.includes(line.name.toLocaleLowerCase())
+        ? [index]
+        : [],
+    );
+    if (!matchingIndices.length) return true;
+
+    const asksPrice = /price|rate|cost/.test(normalized);
+    const asksQuantity = /quantity|how many|count/.test(normalized);
+    if (!asksPrice && !asksQuantity) return true;
+    return matchingIndices.some((index) => {
+      const line = lines[index];
+      const item = items[index] || {};
+      return (
+        (asksPrice && (!item.unit_price?.trim() || !line.price_basis)) ||
+        (asksQuantity && !item.quantity?.trim())
+      );
+    });
+  });
+}
+
 function updateReviewControls() {
   const rows = [...lineItems.querySelectorAll(".item-row")];
+  const items = rows.map((row) =>
+    Object.fromEntries(
+      [...row.querySelectorAll("input")].map((input) => [
+        input.dataset.key,
+        input.value.trim(),
+      ]),
+    ),
+  );
   const complete =
     rows.length > 0 &&
     rows.every((row) =>
       [...row.querySelectorAll("input")].every((input) => input.value.trim()),
     );
-  const hasOpenQuestions = Boolean(activeOrderDraft?.clarifications?.length);
+  const openQuestions = activeOrderDraft
+    ? getOpenClarifications(
+        {
+          ...activeOrderDraft,
+          clarifications: [
+            ...activeOrderDraft.clarifications,
+            ...interpretationIssues,
+          ],
+        },
+        items,
+      )
+    : [];
+  const hasOpenQuestions = openQuestions.length > 0;
   $("calculateButton").disabled =
     !complete || !$("confirmOrder").checked || hasOpenQuestions;
   const hindiTranscript =
@@ -119,6 +165,8 @@ function updateReviewControls() {
       ));
   $("readbackButton").disabled =
     !rows.length || !hindiTranscript || Boolean(advancedOrder);
+  const readbackHint = $("readbackHint");
+  readbackHint.hidden = !rows.length || !hindiTranscript || !advancedOrder;
 }
 
 function resetReviewState() {
@@ -917,9 +965,21 @@ function showOrderDetails(body) {
       "No item could be verified from the transcript. Add an item or switch to manual entry.",
     );
   panel.append(list);
-  const issueMessages = [
-    ...new Set([...draft.clarifications, ...interpretationIssues]),
-  ];
+  const visibleItems = [...lineItems.querySelectorAll(".item-row")].map((row) =>
+    Object.fromEntries(
+      [...row.querySelectorAll("input")].map((input) => [
+        input.dataset.key,
+        input.value.trim(),
+      ]),
+    ),
+  );
+  const issueMessages = getOpenClarifications(
+    {
+      ...draft,
+      clarifications: [...draft.clarifications, ...interpretationIssues],
+    },
+    visibleItems,
+  );
   if (issueMessages.length) {
     const issues = document.createElement("ul");
     issues.className = "order-issues";
@@ -1045,6 +1105,17 @@ async function calculateBill() {
   }
   let response;
   if (activeOrderDraft) {
+    activeOrderDraft.clarifications = getOpenClarifications(
+      {
+        ...activeOrderDraft,
+        clarifications: [
+          ...activeOrderDraft.clarifications,
+          ...interpretationIssues,
+        ],
+      },
+      items,
+    );
+    interpretationIssues = activeOrderDraft.clarifications;
     const previousLines = activeOrderDraft.lines;
     activeOrderDraft.lines = items.map((item, index) => {
       const row = rows[index];
@@ -1115,6 +1186,11 @@ $("confirmOrder").addEventListener("change", updateReviewControls);
 lineItems.addEventListener("input", () => {
   $("confirmOrder").checked = false;
   clearReadback();
+  if (activeOrderDraft)
+    showOrderDetails({
+      status: "ready_for_review",
+      draft: activeOrderDraft,
+    });
   updateReviewControls();
 });
 $("gstRate").addEventListener("input", () => {

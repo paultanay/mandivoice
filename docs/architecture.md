@@ -9,7 +9,9 @@ MandiVoice is a local web app with a FastAPI server. The browser captures audio 
 3. The browser displays the transcript and submits the text to `/api/orders/interpret`. The server reads `GROQ_API_KEY`, requests a strict structured response, and validates the result as an `OrderDraft`. After a recognized strict-generation failure, it retries once and then tries JSON mode with the schema included in the prompt. Every response must pass local validation.
 4. The draft includes short transcript quotes for extracted values. The server drops item lines whose name or source quote cannot be found in the transcript, and it asks for missing bill-critical values. The calculate request checks the remaining field evidence and returns an issue instead of a total when evidence is absent or a field is incomplete.
 5. The merchant reviews the displayed values and edits the draft. A separate calculate request uses the reviewed values and requires explicit confirmation. Arithmetic is performed locally by the server; the language model does not calculate totals.
-6. For simple Hindi orders, `/api/orders/readback` can produce a Timbre Hindi audio read-back.
+6. For simple Hindi orders, `/api/orders/readback` can produce a Timbre Hindi
+   audio read-back. The interface disables it when mixed units or adjustments
+   would make its spoken summary inaccurate.
 
 ## Draft fields and calculations
 
