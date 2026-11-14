@@ -114,6 +114,38 @@ function getOpenClarifications(draft, items) {
   });
 }
 
+function getReadbackTaxRate() {
+  const fallbackRate = $("gstRate").value || "0";
+  if (!activeOrderDraft?.lines?.length) return fallbackRate;
+
+  const rates = activeOrderDraft.lines.map(
+    (line) =>
+      line.tax_rate_percent ??
+      activeOrderDraft.default_tax_rate_percent ??
+      fallbackRate,
+  );
+  const normalizedRates = rates.map((rate) => String(rate || "0"));
+  return normalizedRates.every((rate) => rate === normalizedRates[0])
+    ? normalizedRates[0]
+    : null;
+}
+
+function getReadbackItems() {
+  return [...lineItems.querySelectorAll(".item-row")].map((row, index) => {
+    const item = Object.fromEntries(
+      [...row.querySelectorAll("input")].map((input) => [
+        input.dataset.key,
+        input.value.trim(),
+      ]),
+    );
+    const unit = activeOrderDraft?.lines?.[index]?.unit;
+    if (unit && !/\([^)]*\)$/.test(item.name || "")) {
+      item.name = `${item.name} (${unit})`;
+    }
+    return item;
+  });
+}
+
 function updateReviewControls() {
   const rows = [...lineItems.querySelectorAll(".item-row")];
   const items = rows.map((row) =>
@@ -153,12 +185,12 @@ function updateReviewControls() {
       activeOrderDraft.returns.length ||
       activeOrderDraft.payments.length ||
       activeOrderDraft.order_discount_kind !== "none" ||
+      getReadbackTaxRate() === null ||
       activeOrderDraft.lines.some(
         (line) =>
           line.price_basis !== "unit" ||
           line.pack_size ||
           (line.price_unit && line.price_unit !== (line.unit || "unit")) ||
-          line.tax_rate_percent !== null ||
           line.tax_inclusive ||
           line.discount_kind !== "none" ||
           Number(line.free_quantity || 0) > 0,
@@ -1218,18 +1250,15 @@ $("readbackButton").addEventListener("click", async () => {
   button.disabled = true;
   button.textContent = "Preparing read-back…";
   try {
-    const items = [...lineItems.querySelectorAll(".item-row")].map((row) =>
-      Object.fromEntries(
-        [...row.querySelectorAll("input")].map((input) => [
-          input.dataset.key,
-          input.value.trim(),
-        ]),
-      ),
-    );
+    const items = getReadbackItems();
+    const gstPercent = getReadbackTaxRate();
+    if (gstPercent === null) {
+      throw new Error("Read-back is unavailable when item tax rates differ.");
+    }
     const response = await fetch("/api/orders/readback", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, gst_percent: $("gstRate").value || "0" }),
+      body: JSON.stringify({ items, gst_percent: gstPercent }),
     });
     if (!response.ok) {
       const body = await response.json();

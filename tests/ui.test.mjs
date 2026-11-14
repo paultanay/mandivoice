@@ -247,6 +247,78 @@ test("mixed-unit Hindi drafts explain why read-back is unavailable", () => {
   assert.equal(app.elements.get("readbackHint").hidden, false);
 });
 
+test("a simple Hindi item with one GST rate can be read back", () => {
+  const app = loadApp();
+  const input = (key, value) => {
+    const field = new Element("input");
+    field.dataset.key = key;
+    field.value = value;
+    return field;
+  };
+  const row = new Element("div");
+  row.querySelectorAll = (selector) =>
+    selector === "input"
+      ? [
+          input("name", "बासमती राइस"),
+          input("quantity", "2"),
+          input("unit_price", "40"),
+        ]
+      : [];
+  app.elements.get("lineItems").querySelectorAll = (selector) =>
+    selector === ".item-row" ? [row] : [];
+  app.elements.get("gstRate").value = "0";
+  vm.runInContext(
+    "activeOrderDraft = " +
+      JSON.stringify({
+        lines: [
+          {
+            unit: "kg",
+            price_unit: "kg",
+            price_basis: "unit",
+            pack_size: null,
+            tax_rate_percent: "5",
+            tax_inclusive: false,
+            discount_kind: "none",
+            free_quantity: "0",
+          },
+        ],
+        default_tax_rate_percent: null,
+        clarifications: [],
+        charges: [],
+        returns: [],
+        payments: [],
+        order_discount_kind: "none",
+      }) +
+      "; detectedLanguageCode = 'hi-IN'; interpretationIssues = []",
+    app,
+  );
+
+  app.updateReviewControls();
+
+  assert.equal(app.elements.get("readbackButton").disabled, false);
+  assert.equal(app.getReadbackTaxRate(), "5");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(app.getReadbackItems())),
+    [{ name: "बासमती राइस (kg)", quantity: "2", unit_price: "40" }],
+  );
+});
+
+test("different item GST rates remain ineligible for one-rate read-back", () => {
+  const app = loadApp();
+  vm.runInContext(
+    `activeOrderDraft = ${JSON.stringify({
+      lines: [
+        { tax_rate_percent: "5" },
+        { tax_rate_percent: "12" },
+      ],
+      default_tax_rate_percent: null,
+    })};`,
+    app,
+  );
+
+  assert.equal(app.getReadbackTaxRate(), null);
+});
+
 test("the page uses a repository link instead of local workspace labels", () => {
   const html = readFileSync(
     new URL("../app/static/index.html", import.meta.url),
