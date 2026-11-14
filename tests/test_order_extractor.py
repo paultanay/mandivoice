@@ -539,6 +539,84 @@ def test_recovers_numeric_tax_from_verbatim_multilingual_evidence(monkeypatch):
     assert calculate_order(draft, transcript=transcript)["gross_due"] == "756.00"
 
 
+def test_applies_spoken_gst_to_the_referenced_item(monkeypatch):
+    body = _response_body()
+    body["default_tax_rate_percent"] = None
+    body["tax_evidence"] = None
+    line = body["lines"][0]
+    line.update(
+        {
+            "name": "Basmati Rice",
+            "name_evidence": "बासमती राइस",
+            "quantity": "5",
+            "quantity_evidence": "पाँच के जी",
+            "unit": "kg",
+            "unit_evidence": "के जी",
+            "price_unit": "kg",
+            "price_unit_evidence": "रुपये किलो",
+            "unit_price": "150",
+            "unit_price_evidence": "एक सौ पचास रुपये किलो",
+            "source_quote": "बासमती राइस दे दो पाँच के जी, वो जो एक सौ पचास रुपये किलो करके है",
+        }
+    )
+    transcript = (
+        "बासमती राइस दे दो पाँच के जी, वो जो एक सौ पचास रुपये किलो करके है "
+        "और उस पर फाइव परसेंट जी एस टी भी लगाना, ठीक है?"
+    )
+
+    async def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps(body, ensure_ascii=False)}}
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    draft = asyncio.run(extract_order(transcript, "groq-test-key", "test-model"))
+
+    assert draft.default_tax_rate_percent is None
+    assert draft.lines[0].tax_rate_percent == "5"
+    assert calculate_order(draft, transcript=transcript)["gross_due"] == "787.50"
+
+
+def test_does_not_treat_a_discount_rate_as_a_gst_rate(monkeypatch):
+    body = _response_body()
+    body["default_tax_rate_percent"] = None
+    body["tax_evidence"] = None
+    transcript = "दस किलो दाल, एक सौ पैंतीस रुपये किलो, 5% discount, GST लगाना."
+
+    async def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps(body, ensure_ascii=False)}}
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    draft = asyncio.run(extract_order(transcript, "groq-test-key", "test-model"))
+
+    assert draft.default_tax_rate_percent is None
+    assert draft.lines[0].tax_rate_percent is None
+
+
 def test_asks_for_tax_rate_when_tax_was_requested_but_rate_is_missing(monkeypatch):
     body = _response_body()
     body["default_tax_rate_percent"] = None

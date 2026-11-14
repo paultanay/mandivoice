@@ -223,6 +223,7 @@ async def extract_order(transcript: str, api_key: str, model: str) -> OrderDraft
             "Order interpretation service returned an invalid structured draft"
         ) from None
     _recover_explicit_numeric_tax(draft)
+    _recover_explicit_tax_from_transcript(draft, transcript)
     _ensure_billable_fields_are_clarified(draft, transcript)
     return draft
 
@@ -311,3 +312,104 @@ def _recover_explicit_numeric_tax(draft: OrderDraft) -> None:
             for char in matches[0]
         )
         draft.default_tax_rate_percent = digits.replace(",", ".")
+
+
+def _recover_explicit_tax_from_transcript(draft: OrderDraft, transcript: str) -> None:
+    """Recover a spoken GST rate and keep item-specific scope when stated."""
+    rate_words = {
+        "five": "5",
+        "फाइव": "5",
+        "पाँच": "5",
+        "पांच": "5",
+    }
+    number_pattern = r"\d+(?:[.,]\d+)?|five|फाइव|पाँच|पांच"
+    percent_pattern = (
+        r"%|percent|per\s+cent|परसेंट|प्रतिशत|ટકા|શેકડા|શતাংশ|"
+        r"ಶೇಕಡಾ|ശതമാനം|टक्के|ਫੀਸਦੀ|சதவீத(?:ம்)?|శాతం"
+    )
+    candidates = list(
+        re.finditer(
+            rf"(?<!\w)(?P<rate>{number_pattern})\s*(?:{percent_pattern})(?!\w)",
+            transcript,
+            flags=re.IGNORECASE,
+        )
+    )
+    if len(candidates) != 1:
+        return
+
+    match = candidates[0]
+    gst_pattern = r"\bGST\b|जी\s*एस\s*टी"
+    context_start = max(0, match.start() - 28)
+    context_end = min(len(transcript), match.end() + 48)
+    context = transcript[context_start:context_end]
+    gst_mentions = list(re.finditer(gst_pattern, context, flags=re.IGNORECASE))
+    adjacent_gst = []
+    for mention in gst_mentions:
+        absolute_start = context_start + mention.start()
+        absolute_end = context_start + mention.end()
+        gap = (
+            transcript[match.end() : absolute_start]
+            if absolute_start >= match.end()
+            else transcript[absolute_end : match.start()]
+        )
+        if not re.search(r"[\w\u0900-\u0dff]", gap):
+            adjacent_gst.append((absolute_start, absolute_end))
+    if not adjacent_gst:
+        return
+
+    gst_start, gst_end = min(
+        adjacent_gst,
+        key=lambda span: min(abs(span[0] - match.end()), abs(match.start() - span[1])),
+    )
+    action = re.search(
+        r"लग\w*|\blag\w*|जोड़\w*|जोड\w*|\badd\w*|\bapply\w*|\bcharge\w*|\binclude\w*",
+        transcript[gst_end : min(len(transcript), gst_end + 48)],
+        flags=re.IGNORECASE,
+    )
+    if action is None:
+        return
+
+    raw_rate = match.group("rate").casefold()
+    rate = rate_words.get(raw_rate)
+    if rate is None:
+        rate = "".join(
+            str(unicodedata.digit(char)) if char.isdecimal() else char
+            for char in raw_rate
+        ).replace(",", ".")
+
+    evidence = transcript[
+        min(match.start(), gst_start) : gst_end + action.end()
+    ].strip()
+    prefix = transcript[max(0, match.start() - 32) : match.start()].casefold()
+    item_scoped = bool(
+        re.search(r"(?:उस|इस)\s*(?:पर|पे)\s*$|\bon\s+(?:it|that)\s*$", prefix)
+    )
+    if not item_scoped:
+        draft.default_tax_rate_percent = rate
+        draft.tax_evidence = evidence
+        return
+
+    line_positions = [
+        (
+            transcript.casefold().rfind(
+                line.name_evidence.casefold(), 0, match.start()
+            ),
+            line,
+        )
+        for line in draft.lines
+        if line.name_evidence
+    ]
+    line_positions = [
+        (position, line) for position, line in line_positions if position >= 0
+    ]
+    if not line_positions:
+        draft.default_tax_rate_percent = None
+        draft.tax_evidence = None
+        draft.clarifications.append(f"Which item should receive {rate}% GST?")
+        return
+
+    draft.default_tax_rate_percent = None
+    draft.tax_evidence = None
+    _, target = max(line_positions, key=lambda entry: entry[0])
+    target.tax_rate_percent = rate
+    target.tax_evidence = evidence
