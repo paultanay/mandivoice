@@ -616,10 +616,6 @@ def parse_order(transcript: str) -> dict[str, object]:
     return {"items": _parse_english_style(transcript), "gst_percent": gst_percent}
 
 
-def parse_order_items(transcript: str) -> list[dict[str, str]]:
-    return parse_order(transcript)["items"]
-
-
 def _hindi_integer(value: int) -> str:
     if value < 100:
         return _HINDI_NUMBERS[value]

@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.billing import calculate_order
 from app.order_extractor import OrderExtractionError, extract_order
+from app.order_models import OrderDraft
 
 DATASET = ROOT / "benchmarks" / "retail_orders.jsonl"
 UNIT_ALIASES = {
@@ -51,7 +52,7 @@ def same_number(actual: str | None, expected: str | None) -> bool:
         return actual == expected
 
 
-def evaluate(draft, transcript: str, expected: dict) -> list[str]:
+def evaluate(draft: OrderDraft, transcript: str, expected: dict) -> list[str]:
     problems = []
     lines = draft.lines
     if "line_count" in expected and len(lines) != expected["line_count"]:
@@ -73,13 +74,12 @@ def evaluate(draft, transcript: str, expected: dict) -> list[str]:
                 problems.append(
                     f"{line.name}.{field}: expected {check[field]!r}, got {getattr(line, field)!r}"
                 )
-        for field in ("unit",):
-            if field in check and canonical_unit(
-                getattr(line, field)
-            ) != canonical_unit(check[field]):
-                problems.append(
-                    f"{line.name}.{field}: expected {check[field]!r}, got {getattr(line, field)!r}"
-                )
+        if "unit" in check and canonical_unit(line.unit) != canonical_unit(
+            check["unit"]
+        ):
+            problems.append(
+                f"{line.name}.unit: expected {check['unit']!r}, got {line.unit!r}"
+            )
         if (
             "pack_size" in check
             and (line.pack_size or "").casefold() != check["pack_size"].casefold()
@@ -88,13 +88,14 @@ def evaluate(draft, transcript: str, expected: dict) -> list[str]:
                 f"{line.name}.pack_size: expected {check['pack_size']!r}, got {line.pack_size!r}"
             )
 
-    for field in ("default_tax_rate_percent",):
-        if field in expected and not same_number(
-            getattr(draft, field), expected[field]
-        ):
-            problems.append(
-                f"{field}: expected {expected[field]!r}, got {getattr(draft, field)!r}"
-            )
+    if "default_tax_rate_percent" in expected and not same_number(
+        draft.default_tax_rate_percent, expected["default_tax_rate_percent"]
+    ):
+        problems.append(
+            "default_tax_rate_percent: "
+            f"expected {expected['default_tax_rate_percent']!r}, "
+            f"got {draft.default_tax_rate_percent!r}"
+        )
     if "round_off" in expected and draft.round_off != expected["round_off"]:
         problems.append(
             f"round_off: expected {expected['round_off']}, got {draft.round_off}"

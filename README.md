@@ -9,7 +9,7 @@ The transcript and extracted values are suggestions. Speech recognition can conf
 1. Record up to 30 seconds or choose an audio file.
 2. Send it to Gnani Prisma for transcription. The transcript appears on screen and remains editable.
 3. Send the transcript text to Groq for a structured draft. Each extracted detail includes a short phrase from the transcript as evidence.
-4. Review or edit the item, quantity, price, tax, and any discounts or adjustments. Unclear details or mismatched evidence block automatic calculation until you correct the draft or switch to manual entry.
+4. Review or edit the extracted details. Items with a missing quantity or price remain visible with a question; MandiVoice does not fill those values in. Lines whose item name or source quote cannot be matched to the transcript are discarded. Other evidence mismatches block calculation until you correct the draft or switch to manual entry.
 5. Check the review box and calculate. The server uses decimal arithmetic; the language model never calculates totals.
 
 Unclear or incomplete values must be resolved before calculating. The draft can represent multiple item tax rates, GST-inclusive prices, line or order discounts, free quantities, charges, returns, prior balance, payments, round-off, and a customer GSTIN. These fields are still suggestions and need review. Manual entry remains available if Groq is unconfigured or unavailable.
@@ -18,6 +18,7 @@ Unclear or incomplete values must be resolved before calculating. The draft can 
 
 - Python 3.11 or later
 - `uv`
+- Node.js 18 or later for the frontend checks; it is not needed to run the app
 - A Gnani API key for Prisma transcription; the same key enables optional Timbre Hindi read-back
 - A Groq API key for transcript interpretation
 - A modern browser for microphone recording. Audio file upload is also supported.
@@ -32,7 +33,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 cp -n .env.example .env
 ```
 
-Set `GNANI_API_KEY` and `GROQ_API_KEY` in `.env`. Keep each provider key separate. `GROQ_MODEL` defaults to `qwen/qwen3.8-27b`, which Groq currently lists as supporting strict JSON Schema output. You can change the model ID to another Groq model that supports this feature. The keys stay on the server and are never returned to the browser. Restart the server after changing `.env`. Start the app:
+Set `GNANI_API_KEY` and `GROQ_API_KEY` in `.env`. Keep each provider key separate. `GROQ_MODEL` defaults to `qwen/qwen3.8-27b`. Before selecting another model, confirm it supports Groq's [JSON Schema output](https://console.groq.com/docs/structured-outputs). The keys stay on the server and are never returned to the browser. Restart the server after changing `.env`. Start the app:
 
 ```bash
 .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -50,22 +51,23 @@ Open <http://127.0.0.1:8000>. Keep this development server bound to loopback. It
 - `POST /api/bills/calculate`: validates rows and returns decimal amounts as strings.
 - `GET /api/health`: reports whether Gnani transcription and Groq interpretation are configured. It never returns keys.
 
-The language model can still misunderstand a transcript. Strict JSON output guarantees the shape of its response, not that the extracted values are true. MandiVoice checks that quoted evidence appears in the transcript and blocks unresolved drafts, but the merchant must verify every value and apply the tax treatment appropriate to the transaction. It is not a product catalog or tax adviser.
+The language model can still misunderstand a transcript. Strict JSON Schema constrains the response shape when the configured model supports it; the fallback response is also checked against the local order model. Neither proves that extracted values are correct. MandiVoice checks item evidence and blocks unresolved drafts, but the merchant must verify every value and apply the tax treatment appropriate to the transaction. It is not a product catalog or tax adviser.
 
 ## Development checks
 
 ```bash
 .venv/bin/pytest -q
-.venv/bin/ruff check app tests
-.venv/bin/ruff format --check app tests
+.venv/bin/ruff check app tests scripts
+.venv/bin/ruff format --check app tests scripts
 node --check app/static/app.js
+node --test tests/ui.test.mjs
 ```
 
 The automated tests use local fixtures and mocked Gnani responses; they do not require an API call. See [architecture and data handling](docs/architecture.md) for request flow, rounding, and privacy boundaries.
 
 ## Transcript benchmark
 
-`benchmarks/retail_orders.jsonl` contains the supplied Hinglish edge cases plus short order transcripts in Bengali, Gujarati, Kannada, Malayalam, Marathi, Punjabi, Tamil, and Telugu. Run a live model check after configuring Groq:
+`benchmarks/retail_orders.jsonl` contains the supplied Hinglish edge cases plus short order transcripts in Bengali, Gujarati, Kannada, Malayalam, Marathi, Punjabi, Tamil, and Telugu. These languages are among those listed for [Prisma v3](https://www.gnani.ai/resources/prisma-v3). Run a live model check after configuring Groq:
 
 ```bash
 .venv/bin/python scripts/evaluate_orders.py

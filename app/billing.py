@@ -2,6 +2,7 @@ import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
+from app.evidence import contains_verbatim_quote
 from app.order_models import OrderDraft
 
 _CENT = Decimal("0.01")
@@ -135,16 +136,8 @@ def _rate(value: Any, field: str = "Tax rate") -> Decimal:
     return rate
 
 
-def _evidence_is_present(quote: str | None, transcript: str) -> bool:
-    if not quote or not quote.strip():
-        return False
-    normalized_quote = " ".join(quote.casefold().split())
-    normalized_transcript = " ".join(transcript.casefold().split())
-    return normalized_quote in normalized_transcript
-
-
 def _require_evidence(quote: str | None, transcript: str, field: str) -> None:
-    if not _evidence_is_present(quote, transcript):
+    if not contains_verbatim_quote(quote, transcript):
         raise ValueError(f"Could not verify transcript evidence for {field}")
 
 

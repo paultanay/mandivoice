@@ -307,6 +307,53 @@ def test_falls_back_to_validated_json_mode_after_strict_generation_retries(monke
     assert calls == 3
 
 
+def test_rate_limit_retry_preserves_json_mode_fallback(monkeypatch):
+    calls = 0
+
+    async def skip_wait(_seconds):
+        return None
+
+    monkeypatch.setattr("app.order_extractor.asyncio.sleep", skip_wait)
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        body = json.loads(await request.aread())
+        if calls <= 2:
+            return httpx.Response(
+                400,
+                json={"error": {"message": "Failed to generate JSON."}},
+            )
+        if calls == 3:
+            assert body["response_format"]["type"] == "json_object"
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        assert body["response_format"]["type"] == "json_object"
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(_response_body(), ensure_ascii=False)
+                        }
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    draft = asyncio.run(extract_order(ORDER_TRANSCRIPT, "groq-test-key", "test-model"))
+
+    assert draft.lines[0].unit_price == "135"
+    assert calls == 4
+
+
 def test_drops_model_lines_without_verbatim_item_evidence(monkeypatch):
     body = _response_body()
     body["lines"][0].update(
@@ -388,6 +435,55 @@ def test_adds_missing_price_question_and_discards_unpriced_price_basis(monkeypat
     assert "price" in draft.clarifications[0].casefold()
     assert draft.lines[0].price_unit is None
     assert draft.lines[0].price_basis is None
+
+
+def test_adds_each_missing_detail_even_when_another_question_names_the_item(
+    monkeypatch,
+):
+    body = _response_body()
+    body["lines"][0].update(
+        {
+            "name": "paneer",
+            "name_evidence": "paneer",
+            "quantity": None,
+            "quantity_evidence": None,
+            "unit": "g",
+            "unit_evidence": "gram",
+            "unit_price": None,
+            "unit_price_evidence": None,
+            "price_basis": "unit",
+            "source_quote": "paneer",
+        }
+    )
+    body["lines"][0]["price_unit"] = None
+    body["lines"][0]["price_unit_evidence"] = None
+    body["lines"] = [body["lines"][0]]
+    body["default_tax_rate_percent"] = None
+    body["tax_evidence"] = None
+    body["clarifications"] = ["What price should I use for paneer?"]
+
+    async def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps(body, ensure_ascii=False)}}
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    draft = asyncio.run(extract_order("paneer", "groq-test-key", "test-model"))
+
+    assert len(draft.clarifications) == 2
+    assert any("quantity" in item.casefold() for item in draft.clarifications)
+    assert sum("price" in item.casefold() for item in draft.clarifications) == 1
 
 
 def test_recovers_numeric_tax_from_verbatim_multilingual_evidence(monkeypatch):

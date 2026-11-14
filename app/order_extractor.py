@@ -9,6 +9,7 @@ from copy import deepcopy
 import httpx
 from pydantic import ValidationError
 
+from app.evidence import contains_verbatim_quote
 from app.order_models import OrderDraft
 
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -135,12 +136,13 @@ async def extract_order(transcript: str, api_key: str, model: str) -> OrderDraft
             },
         },
     }
+    request_payload = payload
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 GROQ_CHAT_URL,
                 headers={"Authorization": f"Bearer {api_key}"},
-                json=payload,
+                json=request_payload,
             )
             if _is_generation_failure(response):
                 await asyncio.sleep(0.2)
@@ -157,10 +159,11 @@ async def extract_order(transcript: str, api_key: str, model: str) -> OrderDraft
                         + json.dumps(_strict_schema(), ensure_ascii=False)
                     )
                     fallback_payload["response_format"] = {"type": "json_object"}
+                    request_payload = fallback_payload
                     response = await client.post(
                         GROQ_CHAT_URL,
                         headers={"Authorization": f"Bearer {api_key}"},
-                        json=fallback_payload,
+                        json=request_payload,
                     )
             if response.status_code == 429:
                 try:
@@ -172,7 +175,7 @@ async def extract_order(transcript: str, api_key: str, model: str) -> OrderDraft
                     response = await client.post(
                         GROQ_CHAT_URL,
                         headers={"Authorization": f"Bearer {api_key}"},
-                        json=payload,
+                        json=request_payload,
                     )
     except httpx.RequestError:
         raise OrderExtractionError(
@@ -224,20 +227,13 @@ async def extract_order(transcript: str, api_key: str, model: str) -> OrderDraft
     return draft
 
 
-def _contains_verbatim_quote(quote: str | None, transcript: str) -> bool:
-    if not quote:
-        return False
-    normalize = lambda value: " ".join(value.casefold().split())
-    return normalize(quote) in normalize(transcript)
-
-
 def _ensure_billable_fields_are_clarified(draft: OrderDraft, transcript: str) -> None:
     """Prevent incomplete lines from looking ready for calculation."""
     verified_lines = [
         line
         for line in draft.lines
-        if _contains_verbatim_quote(line.name_evidence, transcript)
-        and _contains_verbatim_quote(line.source_quote, transcript)
+        if contains_verbatim_quote(line.name_evidence, transcript)
+        and contains_verbatim_quote(line.source_quote, transcript)
     ]
     if len(verified_lines) != len(draft.lines):
         draft.lines = verified_lines
@@ -245,23 +241,45 @@ def _ensure_billable_fields_are_clarified(draft: OrderDraft, transcript: str) ->
             "I couldn't verify one or more extracted items against the transcript. "
             "Review the transcript and add those items manually."
         )
-    existing = " ".join(draft.clarifications).casefold()
+    existing = [question.casefold() for question in draft.clarifications]
     for line in draft.lines:
-        missing: list[str] = []
+        missing: list[tuple[str, str, tuple[str, ...]]] = []
         if line.quantity is None:
-            missing.append(f"What quantity should I use for {line.name}?")
+            missing.append(
+                (
+                    "quantity",
+                    f"What quantity should I use for {line.name}?",
+                    ("quantity", "how many", "count"),
+                )
+            )
         if line.unit_price is None:
             line.price_unit = None
             line.price_unit_evidence = None
             line.price_basis = None
-            missing.append(f"What price should I use for {line.name}?")
+            missing.append(
+                (
+                    "price",
+                    f"What price should I use for {line.name}?",
+                    ("price", "rate", "cost"),
+                )
+            )
         elif line.price_basis is None:
             missing.append(
-                f"Is the {line.name} price per unit, per pack, or for the full line?"
+                (
+                    "price basis",
+                    f"Is the {line.name} price per unit, per pack, or for the full line?",
+                    ("per unit", "per pack", "full line", "price basis"),
+                )
             )
-        if line.name.casefold() not in existing:
-            draft.clarifications.extend(missing)
-            existing += " " + " ".join(missing).casefold()
+        for _, question, markers in missing:
+            already_asked = any(
+                line.name.casefold() in previous_question
+                and any(marker in previous_question for marker in markers)
+                for previous_question in existing
+            )
+            if not already_asked:
+                draft.clarifications.append(question)
+                existing.append(question.casefold())
     if (
         draft.lines
         and draft.tax_evidence
