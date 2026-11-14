@@ -132,6 +132,28 @@ textarea:focus-visible {
   color: #707970;
   margin: 18px 0 0;
 }
+.intro-note {
+  max-width: 260px;
+  display: flex;
+  gap: 13px;
+  align-items: flex-start;
+  padding-bottom: 7px;
+  color: #6f796f;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.intro-note p {
+  margin: 0;
+}
+.intro-note strong {
+  color: #314b3a;
+  font-weight: 600;
+}
+.note-icon {
+  font-size: 21px;
+  color: var(--orange);
+  line-height: 1;
+}
 .workspace {
   max-width: 1152px;
   margin: 0 auto;
@@ -500,11 +522,17 @@ textarea:focus-visible {
   align-items: center;
   justify-content: space-between;
 }
+.bill-kicker {
+  color: #9a9d92;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+}
 .bill-paper h3 {
   font-family: var(--serif);
   font-size: 19px;
   letter-spacing: -0.5px;
-  margin: 0;
+  margin: 4px 0 0;
 }
 .draft-badge {
   display: inline-flex;
@@ -728,6 +756,10 @@ textarea:focus-visible {
   line-height: 1.55;
   color: #889188;
 }
+.review-check strong {
+  color: #536453;
+  font-weight: 700;
+}
 .how-section {
   max-width: 1096px;
   margin: 0 auto;
@@ -804,6 +836,9 @@ textarea:focus-visible {
   .intro {
     padding-top: 56px;
   }
+  .intro-note {
+    max-width: 205px;
+  }
   .workspace {
     grid-template-columns: 1fr;
     max-width: 650px;
@@ -843,6 +878,11 @@ textarea:focus-visible {
   }
   .intro-text {
     font-size: 13px;
+  }
+  .intro-note {
+    margin-top: 22px;
+    max-width: none;
+    padding: 0;
   }
   .workspace {
     padding: 0 13px;

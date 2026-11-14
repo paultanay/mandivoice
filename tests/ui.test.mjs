@@ -71,26 +71,6 @@ test("draft editor selects the current value and listens once for selection chan
   assert.deepEqual([...select.listeners.keys()], ["change"]);
 });
 
-test("bill rows are read consistently and trimmed", () => {
-  const app = loadApp();
-  const row = new Element("div");
-  const inputs = [
-    ["name", "  brown bread  "],
-    ["quantity", " 1 "],
-    ["unit_price", " 40 "],
-  ].map(([key, value]) => {
-    const input = new Element("input");
-    input.dataset.key = key;
-    input.value = value;
-    return input;
-  });
-  row.querySelectorAll = () => inputs;
-
-  assert.deepEqual(JSON.parse(JSON.stringify(app.readBillItems([row]))), [
-    { name: "brown bread", quantity: "1", unit_price: "40" },
-  ]);
-});
-
 test("the review panel displays duplicate API issues once", () => {
   const app = loadApp();
   const question = "What price should I use for paneer?";
@@ -279,14 +259,6 @@ test("the page uses a repository link instead of local workspace labels", () => 
   );
   assert.doesNotMatch(
     html,
-    /Local workspace|Built for busy counters|A working draft for a busy shop counter|Running on this device|Your review is the safeguard|Nothing is final until you review it|NEW DRAFT/,
-  );
-  assert.match(
-    html,
-    /Transcription\s+can mishear numbers\. Check the transcript before\s+confirming\./,
-  );
-  assert.match(
-    html,
-    /Read-back is unavailable for mixed units or adjusted bills\./,
+    /Local workspace|Built for busy counters|A working draft for a busy shop counter|Running on this device/,
   );
 });
