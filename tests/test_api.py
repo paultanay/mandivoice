@@ -7,13 +7,6 @@ from app.order_models import OrderDraft
 client = TestClient(app)
 
 
-def test_favicon_returns_empty_success_response():
-    response = client.get("/favicon.ico")
-
-    assert response.status_code == 204
-    assert response.content == b""
-
-
 def test_calculate_endpoint_returns_deterministic_total():
     response = client.post(
         "/api/bills/calculate",

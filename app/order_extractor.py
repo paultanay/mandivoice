@@ -37,15 +37,6 @@ For “two packets, actually one”, keep the latest quantity (one) and discard 
 superseded quantity. A spoken weight such as “250 gram paneer” is quantity 250 g;
 use pack_size only when a package size is explicitly described (for example,
 “one 250 g packet”). Do not turn a weight quantity into one package by default.
-Keep every explicitly requested product in the lines list, even if one of its
-required values is unclear. Put the known item in a line, use null for the
-unclear field, and ask a clarification for that item rather than omitting it or
-asking a question without a corresponding line. Treat Hindi and Hinglish
-correction phrases such as “नहीं”, “मेरा मतलब”, “आई मीन”, “actually”, and
-“wait” as replacing only the value they correct. For example, “दस रुपये, आई मीन दस के जी”
-corrects the amount to a quantity of 10 kg when the surrounding
-order identifies kilograms; do not keep the superseded ₹10 value or change the
-quantity to 1.
 Keep exact short evidence excerpts from the transcript for every populated
 field. A quote must be copied exactly, not translated or rewritten. If a value
 is missing, contradictory, or unclear, return null for that field and add one
@@ -245,23 +236,10 @@ def _ensure_billable_fields_are_clarified(draft: OrderDraft, transcript: str) ->
         and contains_verbatim_quote(line.source_quote, transcript)
     ]
     if len(verified_lines) != len(draft.lines):
-        verified_names = {line.name.casefold() for line in verified_lines}
-        unverified_names = list(
-            dict.fromkeys(
-                line.name
-                for line in draft.lines
-                if line.name.casefold() not in verified_names
-                and not (
-                    contains_verbatim_quote(line.name_evidence, transcript)
-                    and contains_verbatim_quote(line.source_quote, transcript)
-                )
-            )
-        )
         draft.lines = verified_lines
         draft.clarifications.append(
-            "Unverified possible item(s): "
-            + ", ".join(unverified_names)
-            + ". Check the transcript and add any confirmed item manually."
+            "I couldn't verify one or more extracted items against the transcript. "
+            "Review the transcript and add those items manually."
         )
     existing = [question.casefold() for question in draft.clarifications]
     for line in draft.lines:

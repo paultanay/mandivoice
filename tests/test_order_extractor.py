@@ -111,9 +111,6 @@ def test_sends_transcript_to_groq_with_strict_order_schema(monkeypatch):
     assert observed["authorization"] == "Bearer groq-test-key"
     assert observed["body"]["model"] == "test-model"
     assert observed["body"]["response_format"]["json_schema"]["strict"] is True
-    system_prompt = observed["body"]["messages"][0]["content"]
-    assert "Keep every explicitly requested product in the lines list" in system_prompt
-    assert "दस रुपये, आई मीन दस के जी" in system_prompt
     assert ORDER_TRANSCRIPT in json.dumps(observed["body"], ensure_ascii=False)
     assert draft.lines[0].unit_price == "135"
 
@@ -361,7 +358,7 @@ def test_drops_model_lines_without_verbatim_item_evidence(monkeypatch):
     body = _response_body()
     body["lines"][0].update(
         {
-            "name": "Basmati Rice",
+            "name": "E",
             "name_evidence": "E",
             "quantity_evidence": "E",
             "unit_price_evidence": "E",
@@ -389,10 +386,7 @@ def test_drops_model_lines_without_verbatim_item_evidence(monkeypatch):
     draft = asyncio.run(extract_order(ORDER_TRANSCRIPT, "groq-test-key", "test-model"))
 
     assert draft.lines == []
-    assert any(
-        "basmati rice" in item.casefold() and "unverified" in item.casefold()
-        for item in draft.clarifications
-    )
+    assert any("couldn't verify" in item.casefold() for item in draft.clarifications)
 
 
 def test_adds_missing_price_question_and_discards_unpriced_price_basis(monkeypatch):
