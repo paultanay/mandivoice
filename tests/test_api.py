@@ -254,3 +254,30 @@ def test_parses_multiple_hindi_items_and_pairs_each_price():
         ],
         "gst_percent": "5",
     }
+
+
+def test_parses_actual_long_hindi_order_without_confusing_price_and_quantity():
+    transcript = (
+        "भैया, चालीस रुपये किलो चावल दे दो, पच्चीस किलो और दस रुपये किलो आटा दे दो। "
+        "चौदह किलो। और दस ग्राम तेल की पैकेट दे दो, बीस रुपये।"
+    )
+    response = client.post("/api/bills/parse", json={"transcript": transcript})
+
+    assert response.status_code == 200
+    parsed = response.json()
+    assert parsed == {
+        "items": [
+            {"name": "चावल (kg)", "quantity": "25", "unit_price": "40"},
+            {"name": "आटा (kg)", "quantity": "14", "unit_price": "10"},
+            {"name": "10 ग्राम तेल (packet)", "quantity": "1", "unit_price": "20"},
+        ],
+        "gst_percent": None,
+    }
+
+    bill = client.post(
+        "/api/bills/calculate",
+        json={"items": parsed["items"], "gst_percent": "0"},
+    )
+    assert bill.status_code == 200
+    assert bill.json()["subtotal"] == "1160.00"
+    assert bill.json()["total"] == "1160.00"

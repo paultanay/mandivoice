@@ -28,3 +28,13 @@ def test_readback_speaks_currency_fraction_as_paise():
 
     assert "छप्पन रुपये दस पैसे प्रति किलो" in text
     assert "छप्पन रुपये दस पैसे बनते हैं" in text
+
+
+def test_readback_treats_pack_size_as_description_not_bill_unit():
+    text = build_hindi_readback(
+        [{"name": "10 ग्राम तेल (packet)", "quantity": "1", "unit_price": "20"}],
+        gst_percent="0",
+    )
+
+    assert "एक पैकेट 10 ग्राम तेल" in text
+    assert "बीस रुपये प्रति पैकेट" in text

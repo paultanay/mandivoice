@@ -351,6 +351,150 @@ def _price_markers(tokens: list[str]) -> list[tuple[int, Decimal]]:
     return markers
 
 
+def _trim_order_action(tokens: list[str]) -> list[str]:
+    suffixes = (
+        ("दे", "दो"),
+        ("दे", "दीजिए"),
+        ("दे", "दीजिये"),
+        ("देना",),
+        ("चाहिए",),
+    )
+    cleaned = list(tokens)
+    changed = True
+    while changed:
+        changed = False
+        for suffix in suffixes:
+            if len(cleaned) >= len(suffix) and tuple(cleaned[-len(suffix) :]) == suffix:
+                del cleaned[-len(suffix) :]
+                changed = True
+                break
+    return cleaned
+
+
+def _parse_hindi_price_first(transcript: str) -> list[dict[str, str]]:
+    """Parse explicit Hindi price-first orders and pack-size clauses.
+
+    In counter speech, a price-per-unit often comes before the item, while its
+    quantity follows the item: “चालीस रुपये किलो चावल, पच्चीस किलो”. Keep
+    those roles tied to their markers instead of treating the first number as
+    the quantity.
+    """
+    clauses = [
+        _normalize(clause)
+        for clause in re.split(r"[,;।.!?]+|\s+और\s+", transcript, flags=re.IGNORECASE)
+    ]
+    drafts: list[dict[str, str | None]] = []
+
+    for tokens in clauses:
+        if tokens and tokens[0] in {"भैया", "भाई", "सुनिए"}:
+            tokens = tokens[1:]
+        if not tokens:
+            continue
+
+        amount, after_amount = _read_number(tokens, 0)
+        if amount is None or amount <= 0:
+            continue
+
+        # Price first: “40 रुपये किलो चावल दे दो”. The next bare quantity
+        # clause belongs to this item until another item is introduced.
+        if after_amount < len(tokens) and tokens[after_amount] in _CURRENCY:
+            unit_index = after_amount + 1
+            if unit_index < len(tokens) and tokens[unit_index] in {"प्रति", "per"}:
+                unit_index += 1
+            unit, name_start = _unit_after(tokens, unit_index)
+            if unit and name_start < len(tokens):
+                name_tokens = _trim_order_action(tokens[name_start:])
+                name = " ".join(name_tokens).strip()
+                if name:
+                    drafts.append(
+                        {
+                            "name": f"{name} ({unit})",
+                            "quantity": None,
+                            "unit_price": _format_number(amount),
+                            "kind": "price_first",
+                        }
+                    )
+                    continue
+
+        # Pack size: “10 ग्राम तेल की पैकेट”. This describes one pack; it is
+        # not an order for ten separate grams or ten packs.
+        if after_amount < len(tokens) and tokens[after_amount] in {
+            "ग्राम",
+            "g",
+            "gram",
+            "grams",
+        }:
+            name_tokens = _trim_order_action(tokens[after_amount + 1 :])
+            if any(
+                token in {"पैकेट", "पैकेट्स", "packet", "packets"} for token in name_tokens
+            ):
+                for suffix in (
+                    ("की", "पैकेट"),
+                    ("का", "पैकेट"),
+                    ("के", "पैकेट"),
+                    ("packet",),
+                    ("packets",),
+                ):
+                    if (
+                        len(name_tokens) >= len(suffix)
+                        and tuple(name_tokens[-len(suffix) :]) == suffix
+                    ):
+                        name_tokens = name_tokens[: -len(suffix)]
+                        break
+                name = " ".join(name_tokens).strip()
+                if not name:
+                    continue
+                drafts.append(
+                    {
+                        "name": f"{_format_number(amount)} ग्राम {name} (packet)",
+                        "quantity": "1",
+                        "unit_price": None,
+                        "kind": "pack",
+                    }
+                )
+                continue
+
+        # A standalone quantity (“25 किलो”) completes the nearest price-first
+        # item that does not yet have a quantity.
+        unit, end = _unit_after(tokens, after_amount)
+        if unit and end == len(tokens):
+            pending = next(
+                (
+                    draft
+                    for draft in reversed(drafts)
+                    if draft["kind"] == "price_first" and draft["quantity"] is None
+                ),
+                None,
+            )
+            if pending is not None:
+                pending["quantity"] = _format_number(amount)
+                continue
+
+        # A standalone amount (“20 रुपये”) supplies the price for the nearest
+        # package whose size and product were already spoken.
+        if after_amount == len(tokens) - 1 and tokens[-1] in _CURRENCY:
+            pending = next(
+                (
+                    draft
+                    for draft in reversed(drafts)
+                    if draft["kind"] == "pack" and draft["unit_price"] is None
+                ),
+                None,
+            )
+            if pending is not None:
+                pending["unit_price"] = _format_number(amount)
+    items = [
+        {
+            "name": str(draft["name"]),
+            "quantity": str(draft["quantity"]),
+            "unit_price": str(draft["unit_price"]),
+        }
+        for draft in drafts
+        if draft["name"] and draft["quantity"] and draft["unit_price"]
+    ]
+    return items
+
+
 def _readback_items(transcript: str) -> list[dict[str, str]]:
     clauses = [
         _normalize(clause)
@@ -462,6 +606,9 @@ def parse_order(transcript: str) -> dict[str, object]:
         return {"items": [], "gst_percent": None}
 
     tokens = _normalize(transcript)
+    hindi_items = _parse_hindi_price_first(transcript)
+    if hindi_items:
+        return {"items": hindi_items, "gst_percent": _read_gst(tokens)}
     items = _readback_items(transcript)
     gst_percent = _read_gst(tokens)
     if items:
@@ -529,6 +676,8 @@ def _hindi_unit(unit: str) -> str:
         "liters": "लीटर",
         "packet": "पैकेट",
         "packets": "पैकेट",
+        "पैकेट": "पैकेट",
+        "पैकेट्स": "पैकेट",
         "piece": "नग",
         "pieces": "नग",
         "pcs": "नग",
