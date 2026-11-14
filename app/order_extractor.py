@@ -41,8 +41,11 @@ Keep exact short evidence excerpts from the transcript for every populated
 field. A quote must be copied exactly, not translated or rewritten. If a value
 is missing, contradictory, or unclear, return null for that field and add one
 short clarification question naming only that item and missing detail. Ask one
-question per actual ambiguity, never repeat the same question, and do not include
-items whose required details are already stated.
+question per actual ambiguity and never repeat the same question. Include every
+distinct requested item in lines, even when another item needs clarification.
+Do not ask about details that are explicitly stated. When the speaker corrects
+an earlier value for the same item (for example, “नहीं, दस किलो” or “I mean
+10 kg”), use the latest clear value and keep unrelated items in the order.
 Separate quantity, package size, price basis, item tax, invoice tax, discounts,
 free quantity, charges, returns, previous balance, payments, and GSTIN. When a
 price is stated per a smaller unit than the ordered pack (for example, 32 per

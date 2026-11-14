@@ -5,9 +5,23 @@ import httpx
 import pytest
 
 from app.billing import calculate_order
-from app.order_extractor import OrderExtractionError, _strict_schema, extract_order
+from app.order_extractor import (
+    _SYSTEM_PROMPT,
+    OrderExtractionError,
+    _strict_schema,
+    extract_order,
+)
 
 ORDER_TRANSCRIPT = "दस किलो दाल, एक सौ पैंतीस रुपये किलो, पाँच प्रतिशत GST"
+
+
+def test_extraction_prompt_keeps_complete_items_when_another_item_needs_clarification():
+    prompt = " ".join(_SYSTEM_PROMPT.casefold().split())
+    assert "include every distinct requested item" in prompt
+    assert "do not ask about details that are explicitly stated" in prompt
+    assert "do not include items whose required details are already stated" not in (
+        prompt
+    )
 
 
 def test_groq_schema_uses_strict_supported_shape():
