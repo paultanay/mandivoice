@@ -26,18 +26,17 @@ The item suggestion parser is intentionally narrow. It recognizes quantities and
 From this directory:
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-cp .env.example .env
+uv venv .venv
+uv pip install --python .venv/bin/python -r requirements.txt
+cp -n .env.example .env
 ```
 
-Open `.env` and set `GNANI_API_KEY` to your Gnani API key. Keep the file private. It is ignored by Git.
+This uses `uv` to create the environment and install the packages, so system `pip` is not needed. Open `.env` and set `GNANI_API_KEY` to your Gnani API key. Keep the file private. It is ignored by Git.
 
 Start the server:
 
 ```bash
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 Open <http://127.0.0.1:8000>. Microphone permissions work on `localhost` and secure HTTPS pages. Keep this development server bound to `127.0.0.1`; it has no login and is not intended to be exposed to the public internet.
