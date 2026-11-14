@@ -16,6 +16,8 @@ let recordingChunks = [];
 let recordingStartedAt = 0;
 let recordingTimer = null;
 let audioDurationValid = true;
+let detectedLanguageCode = null;
+let readbackUrl = "";
 
 $("billDate").textContent = new Intl.DateTimeFormat("en-IN", {
   day: "numeric", month: "short", year: "numeric",
@@ -65,6 +67,40 @@ function clearAudio() {
   selectedAudio.hidden = true;
   transcribeButton.disabled = true;
   showMessage($("transcribeMessage"), "");
+}
+
+function clearReadback() {
+  if (readbackUrl) URL.revokeObjectURL(readbackUrl);
+  readbackUrl = "";
+  $("readbackAudio").removeAttribute("src");
+  $("readbackAudio").hidden = true;
+}
+
+function updateReviewControls() {
+  const rows = [...lineItems.querySelectorAll(".item-row")];
+  const complete = rows.length > 0 && rows.every((row) =>
+    [...row.querySelectorAll("input")].every((input) => input.value.trim()),
+  );
+  $("calculateButton").disabled = !complete || !$("confirmOrder").checked;
+  const hindiTranscript = detectedLanguageCode === "hi-IN" || /[\u0900-\u097f]/.test(transcriptField.value);
+  $("readbackButton").disabled = !rows.length || !hindiTranscript;
+}
+
+function resetReviewState() {
+  $("confirmOrder").checked = false;
+  clearReadback();
+  updateReviewControls();
+}
+
+function discardDraftForTranscriptEdit() {
+  if (!lineItems.querySelector(".item-row")) return;
+  lineItems.replaceChildren();
+  showEmptyItems();
+  $("gstRate").value = "0";
+  $("subtotal").textContent = "₹0.00";
+  $("gstAmount").textContent = "₹0.00";
+  $("total").textContent = "₹0.00";
+  resetReviewState();
 }
 
 function writeWav(samples, sampleRate) {
@@ -194,9 +230,10 @@ transcribeButton.addEventListener("click", async () => {
     const body = await response.json();
     if (!response.ok) throw new Error(responseMessage(body, "Transcription failed. Try again."));
     transcriptField.value = body.transcript;
+    detectedLanguageCode = body.detected_language_code;
     updateCharacterCount();
     $("languageLabel").textContent = body.detected_language_code ? `Detected language: ${body.detected_language_code}` : "Transcript ready · check names and numbers";
-    showMessage($("transcribeMessage"), "Transcript ready. Check it before making a bill.");
+    await parseAndApply(body.transcript);
     transcriptField.focus();
   } catch (error) {
     showMessage($("transcribeMessage"), error.message || "Could not transcribe this recording.", true);
@@ -213,7 +250,10 @@ function updateCharacterCount() {
     $("languageLabel").textContent = count ? "Transcript · edit as needed" : "Your transcript will appear here";
   }
 }
-transcriptField.addEventListener("input", updateCharacterCount);
+transcriptField.addEventListener("input", () => {
+  updateCharacterCount();
+  discardDraftForTranscriptEdit();
+});
 
 function addLineItem(item = {}) {
   const row = document.createElement("div");
@@ -237,9 +277,14 @@ function addLineItem(item = {}) {
   const remove = document.createElement("button");
   remove.className = "remove-item"; remove.type = "button"; remove.textContent = "×";
   remove.setAttribute("aria-label", "Remove item");
-  remove.addEventListener("click", () => { row.remove(); if (!lineItems.children.length) showEmptyItems(); });
+  remove.addEventListener("click", () => {
+    row.remove();
+    if (!lineItems.children.length) showEmptyItems();
+    resetReviewState();
+  });
   row.append(remove);
   lineItems.append(row);
+  updateReviewControls();
   return row;
 }
 function showEmptyItems() { lineItems.innerHTML = '<div class="empty-items">No items yet. Use a transcript or click “Add an item” below.</div>'; }
@@ -250,24 +295,58 @@ $("addItemButton").addEventListener("click", () => {
   addLineItem().querySelector("input").focus();
 });
 
+async function parseAndApply(transcript) {
+  const response = await fetch("/api/bills/parse", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ transcript }),
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(responseMessage(body, "Could not read this transcript."));
+  if (!body.items.length) {
+    lineItems.replaceChildren();
+    showEmptyItems();
+    $("gstRate").value = "0";
+    $("subtotal").textContent = "₹0.00";
+    $("gstAmount").textContent = "₹0.00";
+    $("total").textContent = "₹0.00";
+    resetReviewState();
+    showMessage($("transcribeMessage"), "Transcript ready, but no complete item was clear enough to add. Enter the missing details below.");
+    return;
+  }
+  lineItems.replaceChildren();
+  body.items.forEach(addLineItem);
+  if (body.gst_percent !== null && body.gst_percent !== undefined) {
+    $("gstRate").value = body.gst_percent;
+  } else {
+    $("gstRate").value = "0";
+  }
+  $("subtotal").textContent = "₹0.00";
+  $("gstAmount").textContent = "₹0.00";
+  $("total").textContent = "₹0.00";
+  detectedLanguageCode = detectedLanguageCode || (/^[\u0900-\u097f\s.,!?;:]+$/.test(transcript) ? "hi-IN" : null);
+  resetReviewState();
+  const itemSummary = body.items.map((item) => `${item.quantity} × ${item.name} at ₹${item.unit_price}`).join(", ");
+  const taxSummary = body.gst_percent ? ` GST ${body.gst_percent}%.` : "";
+  showMessage($("transcribeMessage"), `Draft extracted: ${itemSummary}.${taxSummary} Check every value before calculating.`);
+}
+
 $("parseButton").addEventListener("click", async () => {
   const transcript = transcriptField.value.trim();
-  if (!transcript) { showMessage($("transcribeMessage"), "Record or type an order first.", true); transcriptField.focus(); return; }
-  const button = $("parseButton"); button.disabled = true;
+  if (!transcript) {
+    showMessage($("transcribeMessage"), "Record or type an order first.", true);
+    transcriptField.focus();
+    return;
+  }
+  const button = $("parseButton");
+  button.disabled = true;
   try {
-    const response = await fetch("/api/bills/parse", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transcript }),
-    });
-    const body = await response.json();
-    if (!response.ok) throw new Error(responseMessage(body, "Could not read this transcript."));
-    if (!body.items.length) {
-      showMessage($("transcribeMessage"), "No clear quantity-and-price lines found. Add the items yourself so nothing is guessed.", true); return;
-    }
-    lineItems.replaceChildren(); body.items.forEach(addLineItem);
-    showMessage($("transcribeMessage"), `${body.items.length} item${body.items.length === 1 ? "" : "s"} found. Review each one and add anything missing.`);
-    await calculateBill();
-  } catch (error) { showMessage($("transcribeMessage"), error.message, true); }
-  finally { button.disabled = false; }
+    await parseAndApply(transcript);
+  } catch (error) {
+    showMessage($("transcribeMessage"), error.message, true);
+  } finally {
+    button.disabled = false;
+  }
 });
 
 function formatRupees(value) { return `₹${value}`; }
@@ -277,6 +356,9 @@ async function calculateBill() {
   ));
   if (!items.length) {
     throw new Error("Add an item first. Enter its quantity and price, then calculate the bill.");
+  }
+  if (!$("confirmOrder").checked) {
+    throw new Error("Review the transcript and line items, then check the confirmation box.");
   }
   const response = await fetch("/api/bills/calculate", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -289,6 +371,17 @@ async function calculateBill() {
   $("total").textContent = formatRupees(body.total);
   showMessage($("billMessage"), "");
 }
+$("confirmOrder").addEventListener("change", updateReviewControls);
+lineItems.addEventListener("input", () => {
+  $("confirmOrder").checked = false;
+  clearReadback();
+  updateReviewControls();
+});
+$("gstRate").addEventListener("input", () => {
+  $("confirmOrder").checked = false;
+  clearReadback();
+  updateReviewControls();
+});
 $("calculateButton").addEventListener("click", async () => {
   const button = $("calculateButton"); button.disabled = true;
   try {
@@ -297,6 +390,32 @@ $("calculateButton").addEventListener("click", async () => {
   } catch (error) { showMessage($("billMessage"), error.message, true); }
   finally { button.disabled = false; }
 });
-$("gstRate").addEventListener("change", () => {
-  if (lineItems.querySelector(".item-row")) calculateBill().catch((error) => showMessage($("billMessage"), error.message, true));
+$("readbackButton").addEventListener("click", async () => {
+  const button = $("readbackButton");
+  button.disabled = true;
+  button.textContent = "Preparing read-back…";
+  try {
+    const items = [...lineItems.querySelectorAll(".item-row")].map((row) => Object.fromEntries(
+      [...row.querySelectorAll("input")].map((input) => [input.dataset.key, input.value.trim()]),
+    ));
+    const response = await fetch("/api/orders/readback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items, gst_percent: $("gstRate").value || "0" }),
+    });
+    if (!response.ok) {
+      const body = await response.json();
+      throw new Error(responseMessage(body, "Could not prepare the Hindi read-back."));
+    }
+    clearReadback();
+    readbackUrl = URL.createObjectURL(await response.blob());
+    $("readbackAudio").src = readbackUrl;
+    $("readbackAudio").hidden = false;
+    showMessage($("transcribeMessage"), "Play the read-back and compare it with the order you heard.");
+  } catch (error) {
+    showMessage($("transcribeMessage"), error.message, true);
+  } finally {
+    button.textContent = "Hear order read-back ♫";
+    updateReviewControls();
+  }
 });

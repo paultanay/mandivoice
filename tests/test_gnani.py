@@ -63,3 +63,45 @@ def test_rejects_non_success_response_from_gnani():
             )
     finally:
         gnani.httpx.AsyncClient = original_client
+
+
+def test_synthesize_hindi_readback_with_timbre_v25(monkeypatch):
+    observed = {}
+
+    async def handler(request):
+        observed["url"] = str(request.url)
+        observed["key"] = request.headers.get("X-API-Key-ID")
+        observed["payload"] = await request.aread()
+        return httpx.Response(200, content=b"RIFFtest-wav")
+
+    transport = httpx.MockTransport(handler)
+    original_client = gnani.httpx.AsyncClient
+    monkeypatch.setattr(
+        gnani.httpx,
+        "AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    audio = asyncio.run(gnani.synthesize_hindi("नमस्ते", "test-key"))
+
+    assert observed["url"] == "https://api.vachana.ai/api/v1/tts/inference"
+    assert observed["key"] == "test-key"
+    assert b"timbre-v2.5" in observed["payload"]
+    assert b"Nalini" in observed["payload"]
+    assert audio == b"RIFFtest-wav"
+
+
+def test_synthesize_rejects_upstream_error(monkeypatch):
+    async def handler(request):
+        return httpx.Response(403, json={"success": False})
+
+    transport = httpx.MockTransport(handler)
+    original_client = gnani.httpx.AsyncClient
+    monkeypatch.setattr(
+        gnani.httpx,
+        "AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    with pytest.raises(gnani.GnaniAPIError):
+        asyncio.run(gnani.synthesize_hindi("नमस्ते", "test-key"))

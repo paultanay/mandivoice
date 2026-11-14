@@ -66,7 +66,7 @@ def calculate_bill(
         normalized.append(
             {
                 "name": name,
-                "quantity": str(quantity.normalize()),
+                "quantity": format(quantity.normalize(), "f"),
                 "unit_price": _format(unit_price),
                 "line_total": _format(line_total),
             }

@@ -7,13 +7,13 @@ from typing import Annotated
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.billing import calculate_bill
-from app.gnani import GnaniAPIError, transcribe_audio
-from app.order_parser import parse_order_items
+from app.gnani import GnaniAPIError, synthesize_hindi, transcribe_audio
+from app.order_parser import build_hindi_readback, parse_order
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR.parent / ".env")
@@ -49,6 +49,11 @@ class BillRequest(BaseModel):
     gst_percent: str = Field(default="0", max_length=12)
 
 
+class ReadbackRequest(BaseModel):
+    items: list[LineItem] = Field(max_length=50)
+    gst_percent: str = Field(default="0", max_length=12)
+
+
 @app.get("/")
 async def home() -> FileResponse:
     return FileResponse(BASE_DIR / "static" / "index.html")
@@ -65,8 +70,8 @@ async def health() -> dict[str, str]:
 
 
 @app.post("/api/bills/parse")
-async def parse(request: ParseRequest) -> dict[str, list[dict[str, str]]]:
-    return {"items": parse_order_items(request.transcript)}
+async def parse(request: ParseRequest) -> dict[str, object]:
+    return parse_order(request.transcript)
 
 
 @app.post("/api/bills/calculate")
@@ -78,6 +83,31 @@ async def calculate(request: BillRequest) -> dict:
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
+
+
+@app.post("/api/orders/readback")
+async def order_readback(request: ReadbackRequest) -> Response:
+    api_key = os.getenv("GNANI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Set GNANI_API_KEY in your environment to enable voice confirmation.",
+        )
+    try:
+        text = build_hindi_readback(
+            [item.model_dump() for item in request.items],
+            gst_percent=request.gst_percent,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+    try:
+        audio = await synthesize_hindi(text, api_key)
+    except (GnaniAPIError, httpx.RequestError):
+        raise HTTPException(
+            status_code=502,
+            detail="Voice confirmation failed. Check your API key, credits, or connection.",
+        ) from None
+    return Response(content=audio, media_type="audio/wav")
 
 
 @app.post("/api/transcribe")

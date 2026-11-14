@@ -1,29 +1,29 @@
 # MandiVoice
 
-MandiVoice turns a short spoken shop order into an editable bill draft. Gnani Prisma transcribes the recording; MandiVoice suggests only the item lines that include an explicit quantity and price. You review the transcript and every field. The server calculates subtotal, optional GST, and total with decimal arithmetic.
+MandiVoice turns a short spoken shop order into a bill draft that the shopkeeper can inspect before calculating. It is built for a counter workflow: capture the customer's order, get a transcript, extract only the quantities and prices the order states, review the draft, then calculate the total.
 
-There is no payment flow, automatic invoice submission, or stored customer ledger. An unclear line stays out of the suggestion rather than receiving an invented price.
+The transcript and extracted values are suggestions. Speech recognition can confuse item names, quantities, prices, or tax rates. The app requires an explicit review before it calculates a bill. It does not collect payment or save bill history.
 
-## What works
+## The order flow
 
-- Record up to 30 seconds in the browser or upload a WAV, MP3, OGG, FLAC, AAC, or M4A file.
-- Transcribe with Gnani Prisma v3.0, using automatic language detection.
-- Suggest item rows from explicit patterns such as `2 kg rice at 60` or `3 packets tea at Rs 25`.
-- Edit, remove, and add items before calculating.
-- Calculate subtotal and optional GST with Python `Decimal` and standard half-up currency rounding.
-- Run on your own machine. The API key stays on the server.
+1. Record up to 30 seconds or choose an audio file.
+2. Send it to Gnani Prisma for transcription. The transcript appears on screen and remains editable.
+3. MandiVoice parses Hindi and English order phrases into item rows when it can identify an explicit item, quantity, and unit price. It can also read an explicitly spoken GST rate.
+4. Review or edit every value. In Hindi mode, you can ask Timbre to read the draft back aloud and compare it with what the customer said.
+5. Check the review box and calculate. The server uses decimal arithmetic for subtotal, GST, and total.
 
-The item suggestion parser is intentionally narrow. It recognizes quantities and prices written in English-style digits and phrasing; it does not yet turn Hindi number words into bill lines. If a line is not recognized, enter it yourself. Speech recognition can mishear prices, so check the transcript and bill against the spoken order.
+Unclear or incomplete values are left blank instead of being guessed. You can add or edit rows manually. For example, the supplied demo recording transcribes as “भैया, चालीस रुपये के जी बासमती राइस, फिफ्टी सिक्स रुपये किलो बिल करो और फ़ाइव परसेंट जी एस टी लगाओ।” The parser proposes 40 kg of basmati rice at ₹56 per kg and 5% GST. Check those values against the audio before calculating.
 
 ## Requirements
 
 - Python 3.11 or later
-- An API key from the Gnani speech API dashboard to use transcription
-- A modern browser with microphone permission for recording; file upload also works
+- `uv`
+- A Gnani API key for Prisma transcription; the same key enables optional Timbre Hindi read-back
+- A modern browser for microphone recording. Audio file upload is also supported.
 
 ## Run locally
 
-From this directory:
+From the repository directory:
 
 ```bash
 uv venv .venv
@@ -31,50 +31,38 @@ uv pip install --python .venv/bin/python -r requirements.txt
 cp -n .env.example .env
 ```
 
-This uses `uv` to create the environment and install the packages, so system `pip` is not needed. Open `.env` and set `GNANI_API_KEY` to your Gnani API key. Keep the file private. It is ignored by Git.
-
-Start the server:
+Set `GNANI_API_KEY` in `.env`. The file is ignored by Git and the key is used only by the server. Start the app:
 
 ```bash
 .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open <http://127.0.0.1:8000>. Microphone permissions work on `localhost` and secure HTTPS pages. Keep this development server bound to `127.0.0.1`; it has no login and is not intended to be exposed to the public internet.
+Open <http://127.0.0.1:8000>. Keep this development server bound to loopback. It has no login and is not suitable for public hosting as-is.
 
-## Example order
+## API
 
-Say or type:
+- `POST /api/transcribe`: transcribes one audio file using Gnani Prisma v3.0 and automatic Indic language detection.
+- `POST /api/bills/parse`: returns item rows and GST explicitly found in a transcript. A partial order can return no rows or an incomplete row.
+- `POST /api/orders/readback`: synthesizes a Hindi read-back of the reviewed order using Gnani Timbre v2.5. It returns WAV audio.
+- `POST /api/bills/calculate`: validates rows and returns decimal amounts as strings.
+- `GET /api/health`: reports server status and whether the transcription key is configured. It never returns the key.
 
-> 2 kg rice at 60, 3 packets tea at Rs 25
-
-Select **Find priced items**. The app proposes two editable rows. Review their names and values, enter a GST rate if needed, and calculate the total. If you enter only `2 kg rice`, no price is filled in for you.
-
-## API behavior
-
-- `POST /api/transcribe`: accepts one audio file up to 20 MB and calls `POST https://api.vachana.ai/stt/v3` with `model=prisma-v3.0` and `language_code=indic-auto`.
-- `POST /api/bills/parse`: extracts only explicit quantity and unit-price patterns. Unrecognized text returns an empty item list.
-- `POST /api/bills/calculate`: validates line items and returns amounts as decimal strings.
-- `GET /api/health`: reports server health and whether transcription is configured. It never returns the key.
-
-Gnani's documentation lists WAV, MP3, OGG, FLAC, AAC, and M4A for short STT requests, and documents Prisma v3.0 as opt-in. See [Prisma v3.0](https://docs.gnani.ai/api/STT/models/prisma-v3) and [API authentication](https://docs.gnani.ai/api/introduction/introduction).
+The current parser targets common short Hindi and English shop orders. It is not a general speech understanding system, product catalog, or tax adviser. Verify every extracted value and use the tax rate appropriate to the transaction.
 
 ## Development checks
 
 ```bash
 .venv/bin/pytest -q
-node --check app/static/app.js
 .venv/bin/ruff check app tests
 .venv/bin/ruff format --check app tests
+node --check app/static/app.js
 ```
 
-Tests cover arithmetic, validation, parser behavior, API error handling, and transcription responses without making live API calls. To verify your own API key, run the app and transcribe a short synthetic order recording.
+The automated tests use local fixtures and mocked Gnani responses; they do not require an API call. See [architecture and data handling](docs/architecture.md) for request flow, rounding, and privacy boundaries.
 
-## Privacy and security
+## Privacy
 
-- Do not commit `.env`, customer recordings, real account details, or personal data.
-- Transcription audio is sent to Gnani's API. MandiVoice does not retain a bill history.
-- The server keeps the API key out of browser code and does not log it.
-- Use synthetic examples when recording a public demo.
+Audio submitted for transcription and read-back requests is sent to Gnani. MandiVoice does not retain recordings or bills in a database. Do not commit `.env`, customer recordings, or personal data. Use a synthetic order for a public demo.
 
 ## License
 

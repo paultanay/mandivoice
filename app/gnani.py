@@ -43,3 +43,30 @@ async def transcribe_audio(
         "transcript": transcript.strip(),
         "detected_language_code": language if isinstance(language, str) else None,
     }
+
+
+async def synthesize_hindi(text: str, api_key: str) -> bytes:
+    timeout = httpx.Timeout(45.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            "https://api.vachana.ai/api/v1/tts/inference",
+            headers={"X-API-Key-ID": api_key},
+            json={
+                "text": text,
+                "voice": "Nalini",
+                "model": "timbre-v2.5",
+                "language": "hi-IN",
+                "audio_config": {
+                    "encoding": "linear_pcm",
+                    "container": "wav",
+                    "num_channels": 1,
+                    "sample_rate": 24000,
+                    "sample_width": 2,
+                },
+            },
+        )
+    if response.status_code != 200:
+        raise GnaniAPIError(f"Gnani TTS returned HTTP {response.status_code}")
+    if not response.content.startswith(b"RIFF"):
+        raise GnaniAPIError("Gnani TTS returned an invalid WAV response")
+    return response.content
