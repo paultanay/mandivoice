@@ -38,6 +38,7 @@ def parse_order_items(transcript: str) -> list[dict[str, str]]:
 
     items: list[dict[str, str]] = []
     for segment in re.split(r",|\n|\s+and\s+", transcript, flags=re.IGNORECASE):
+        segment = segment.strip().rstrip(".!?;")
         match = _ITEM_PATTERN.fullmatch(segment)
         if not match:
             continue

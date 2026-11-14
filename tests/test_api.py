@@ -140,3 +140,15 @@ def test_calculate_endpoint_bounds_input_size():
     )
 
     assert response.status_code == 422
+
+
+def test_parse_endpoint_accepts_sentence_punctuation_after_price():
+    response = client.post(
+        "/api/bills/parse",
+        json={"transcript": "2 kg rice at 60 rupees."},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [
+        {"name": "rice (kg)", "quantity": "2", "unit_price": "60"}
+    ]
