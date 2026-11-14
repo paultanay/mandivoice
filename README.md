@@ -47,7 +47,7 @@ Open <http://127.0.0.1:8000>. Keep this development server bound to loopback. It
 - `POST /api/orders/interpret`: sends transcript text to Groq and returns an evidence-linked order draft and deterministic preview when the draft is complete.
 - `POST /api/orders/calculate`: calculates a user-reviewed structured draft after explicit review confirmation.
 - `POST /api/bills/parse`: legacy deterministic parser for common short orders.
-- `POST /api/orders/readback`: synthesizes a Hindi read-back of the reviewed order using Gnani Timbre v2.5. It returns WAV audio.
+- `POST /api/orders/readback`: synthesizes a Hindi read-back for simple order lines using Gnani Timbre v2.5. It returns WAV audio. The interface disables read-back when mixed units or adjustments are present.
 - `POST /api/bills/calculate`: validates rows and returns decimal amounts as strings.
 - `GET /api/health`: reports whether Gnani transcription and Groq interpretation are configured. It never returns keys.
 

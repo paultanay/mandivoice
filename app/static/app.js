@@ -114,9 +114,8 @@ function getOpenClarifications(draft, items) {
   });
 }
 
-function updateReviewControls() {
-  const rows = [...lineItems.querySelectorAll(".item-row")];
-  const items = rows.map((row) =>
+function readBillItems(rows) {
+  return rows.map((row) =>
     Object.fromEntries(
       [...row.querySelectorAll("input")].map((input) => [
         input.dataset.key,
@@ -124,11 +123,14 @@ function updateReviewControls() {
       ]),
     ),
   );
+}
+
+function updateReviewControls() {
+  const rows = [...lineItems.querySelectorAll(".item-row")];
+  const items = readBillItems(rows);
   const complete =
-    rows.length > 0 &&
-    rows.every((row) =>
-      [...row.querySelectorAll("input")].every((input) => input.value.trim()),
-    );
+    items.length > 0 &&
+    items.every((item) => Object.values(item).every(Boolean));
   const openQuestions = activeOrderDraft
     ? getOpenClarifications(
         {
@@ -732,53 +734,51 @@ function showOrderDetails(body) {
       ],
     ]);
   }
-  {
-    appendOrderDetail(
-      list,
-      `Order discount: ${draft.order_discount_value ?? "none"} ${draft.order_discount_kind}`,
-      draft.order_discount_evidence,
+  appendOrderDetail(
+    list,
+    `Order discount: ${draft.order_discount_value ?? "none"} ${draft.order_discount_kind}`,
+    draft.order_discount_evidence,
+    [
       [
-        [
-          "Discount type",
-          draft.order_discount_kind,
-          (value) => {
-            draft.order_discount_kind = value;
-          },
-          {
-            choices: [
-              { value: "none", label: "No discount" },
-              { value: "percent", label: "Percent" },
-              { value: "amount", label: "Rupees" },
-            ],
-          },
-        ],
-        [
-          "Discount value",
-          draft.order_discount_value,
-          (value) => {
-            draft.order_discount_value = value;
-          },
-          { numeric: true },
-        ],
-        [
-          "Apply after tax",
-          draft.order_discount_after_tax,
-          (value) => {
-            draft.order_discount_after_tax = value;
-          },
-          { checkbox: true },
-        ],
-        [
-          "Round bill to rupee",
-          draft.round_off,
-          (value) => {
-            draft.round_off = value;
-          },
-          { checkbox: true },
-        ],
+        "Discount type",
+        draft.order_discount_kind,
+        (value) => {
+          draft.order_discount_kind = value;
+        },
+        {
+          choices: [
+            { value: "none", label: "No discount" },
+            { value: "percent", label: "Percent" },
+            { value: "amount", label: "Rupees" },
+          ],
+        },
       ],
-    );
-  }
+      [
+        "Discount value",
+        draft.order_discount_value,
+        (value) => {
+          draft.order_discount_value = value;
+        },
+        { numeric: true },
+      ],
+      [
+        "Apply after tax",
+        draft.order_discount_after_tax,
+        (value) => {
+          draft.order_discount_after_tax = value;
+        },
+        { checkbox: true },
+      ],
+      [
+        "Round bill to rupee",
+        draft.round_off,
+        (value) => {
+          draft.round_off = value;
+        },
+        { checkbox: true },
+      ],
+    ],
+  );
   for (const [index, charge] of draft.charges.entries())
     appendOrderDetail(
       list,
@@ -965,14 +965,9 @@ function showOrderDetails(body) {
       "No item could be verified from the transcript. Add an item or switch to manual entry.",
     );
   panel.append(list);
-  const visibleItems = [...lineItems.querySelectorAll(".item-row")].map((row) =>
-    Object.fromEntries(
-      [...row.querySelectorAll("input")].map((input) => [
-        input.dataset.key,
-        input.value.trim(),
-      ]),
-    ),
-  );
+  const visibleItems = readBillItems([
+    ...lineItems.querySelectorAll(".item-row"),
+  ]);
   const issueMessages = getOpenClarifications(
     {
       ...draft,
@@ -1085,14 +1080,7 @@ function formatRupees(value) {
 }
 async function calculateBill() {
   const rows = [...lineItems.querySelectorAll(".item-row")];
-  const items = rows.map((row) =>
-    Object.fromEntries(
-      [...row.querySelectorAll("input")].map((input) => [
-        input.dataset.key,
-        input.value.trim(),
-      ]),
-    ),
-  );
+  const items = readBillItems(rows);
   if (!items.length) {
     throw new Error(
       "Add an item first. Enter its quantity and price, then calculate the bill.",
@@ -1218,14 +1206,7 @@ $("readbackButton").addEventListener("click", async () => {
   button.disabled = true;
   button.textContent = "Preparing read-back…";
   try {
-    const items = [...lineItems.querySelectorAll(".item-row")].map((row) =>
-      Object.fromEntries(
-        [...row.querySelectorAll("input")].map((input) => [
-          input.dataset.key,
-          input.value.trim(),
-        ]),
-      ),
-    );
+    const items = readBillItems([...lineItems.querySelectorAll(".item-row")]);
     const response = await fetch("/api/orders/readback", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
