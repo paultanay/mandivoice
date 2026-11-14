@@ -209,11 +209,27 @@ test("a reviewed complete draft enables calculation after its price question is 
   assert.equal(app.elements.get("calculateButton").disabled, false);
 });
 
-test("mixed-unit Hindi drafts explain why read-back is unavailable", () => {
+test("mixed price units use the reviewed draft for read-back", () => {
   const app = loadApp();
   const row = new Element("div");
-  row.querySelectorAll = () => [];
-  app.elements.get("lineItems").querySelectorAll = () => [row];
+  const makeInput = (key, value) => {
+    const input = new Element("input");
+    input.dataset.key = key;
+    input.value = value;
+    return input;
+  };
+  row.querySelectorAll = (selector) =>
+    selector === "input"
+      ? [
+          makeInput("name", "paneer"),
+          makeInput("quantity", "250"),
+          makeInput("unit_price", "50"),
+        ]
+      : [];
+  row.dataset.draftIndex = "0";
+  app.elements.get("lineItems").querySelectorAll = (selector) =>
+    selector === ".item-row" ? [row] : [];
+  app.elements.get("gstRate").value = "0";
   const draft = {
     lines: [
       {
@@ -243,8 +259,11 @@ test("mixed-unit Hindi drafts explain why read-back is unavailable", () => {
 
   app.updateReviewControls();
 
-  assert.equal(app.elements.get("readbackButton").disabled, true);
-  assert.equal(app.elements.get("readbackHint").hidden, false);
+  assert.equal(app.elements.get("readbackButton").disabled, false);
+  assert.equal(app.elements.get("readbackHint").hidden, true);
+  assert.equal(app.getReadbackDraft().lines[0].unit, "g");
+  assert.equal(app.getReadbackDraft().lines[0].price_unit, "kg");
+  assert.equal(app.getReadbackDraft().lines[0].quantity, "250");
 });
 
 test("a simple Hindi item with one GST rate can be read back", () => {

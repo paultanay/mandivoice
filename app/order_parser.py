@@ -4,7 +4,8 @@ import re
 import unicodedata
 from decimal import Decimal, InvalidOperation
 
-from app.billing import calculate_bill
+from app.billing import calculate_bill, calculate_order
+from app.order_models import OrderDraft
 
 _ITEM_PATTERN = re.compile(
     r"^\s*(?P<quantity>\d+(?:\.\d+)?)\s*"
@@ -677,7 +678,52 @@ def _hindi_unit(unit: str) -> str:
         "piece": "नग",
         "pieces": "नग",
         "pcs": "नग",
+        "unit": "इकाई",
     }.get(unit.lower(), unit)
+
+
+def build_hindi_order_readback(draft: OrderDraft) -> str:
+    """Speak the same converted line values and total used by order billing."""
+    bill = calculate_order(draft)
+    descriptions = []
+    for line, result in zip(draft.lines, bill["lines"], strict=True):
+        quantity = _hindi_decimal(result["quantity"])
+        unit = _hindi_unit(result["unit"]) if result["unit"] else "आइटम"
+        name = line.name.strip()
+        price = _hindi_currency(result["unit_price"])
+        line_total = _hindi_currency(result["total"])
+        if line.price_basis == "line_total":
+            description = (
+                f"{quantity} {unit} {name}, कुल कीमत {price}; इस पंक्ति का देय {line_total}"
+            )
+        else:
+            price_unit = _hindi_unit(result["price_unit"]) or unit
+            description = (
+                f"{quantity} {unit} {name}, {price} प्रति {price_unit}; "
+                f"इस पंक्ति का देय {line_total}"
+            )
+        descriptions.append(description)
+
+    summary = [f"कुल GST {_hindi_currency(bill['tax_amount'])}"]
+    if Decimal(bill["order_discount"]) > 0:
+        summary.append(f"ऑर्डर छूट {_hindi_currency(bill['order_discount'])}")
+    if Decimal(bill["charges_total"]) > 0:
+        summary.append(f"शुल्क {_hindi_currency(bill['charges_total'])}")
+    if Decimal(bill["returns_total"]) > 0:
+        summary.append(f"वापसी समायोजन {_hindi_currency(bill['returns_total'])}")
+    if Decimal(bill["previous_balance"]) > 0:
+        summary.append(f"पिछला बकाया {_hindi_currency(bill['previous_balance'])}")
+    if Decimal(bill["amount_paid"]) > 0:
+        summary.append(f"जमा {_hindi_currency(bill['amount_paid'])}")
+    round_off = Decimal(bill["round_off"])
+    if round_off > 0:
+        summary.append(f"राउंड ऑफ जोड़ {_hindi_currency(str(round_off))}")
+    elif round_off < 0:
+        summary.append(f"राउंड ऑफ घट {_hindi_currency(str(abs(round_off)))}")
+    summary.append(f"कुल देय {_hindi_currency(bill['balance_due'])}")
+    order = " और ".join(descriptions)
+    totals = "। ".join(summary)
+    return f"आपका ऑर्डर: {order}। {totals}। क्या यह सही है?"
 
 
 def build_hindi_readback(items: list[dict[str, str]], gst_percent: str = "0") -> str:

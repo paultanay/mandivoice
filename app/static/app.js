@@ -146,6 +146,48 @@ function getReadbackItems() {
   });
 }
 
+function getReadbackDraft() {
+  if (!activeOrderDraft) return null;
+
+  const rows = [...lineItems.querySelectorAll(".item-row")];
+  const items = rows.map((row) =>
+    Object.fromEntries(
+      [...row.querySelectorAll("input")].map((input) => [
+        input.dataset.key,
+        input.value.trim(),
+      ]),
+    ),
+  );
+  const previousLines = activeOrderDraft.lines;
+  const draft = {
+    ...activeOrderDraft,
+    lines: rows.map((row, index) => {
+      const sourceIndex = Number(row.dataset.draftIndex);
+      const source = Number.isInteger(sourceIndex)
+        ? previousLines[sourceIndex]
+        : null;
+      return {
+        ...(source || {}),
+        name: items[index].name,
+        quantity: items[index].quantity,
+        unit_price: items[index].unit_price,
+      };
+    }),
+    default_tax_rate_percent: $("gstRate").value || null,
+  };
+  draft.clarifications = getOpenClarifications(
+    {
+      ...draft,
+      clarifications: [
+        ...draft.clarifications,
+        ...interpretationIssues,
+      ],
+    },
+    items,
+  );
+  return draft;
+}
+
 function updateReviewControls() {
   const rows = [...lineItems.querySelectorAll(".item-row")];
   const items = rows.map((row) =>
@@ -190,13 +232,12 @@ function updateReviewControls() {
         (line) =>
           line.price_basis !== "unit" ||
           line.pack_size ||
-          (line.price_unit && line.price_unit !== (line.unit || "unit")) ||
           line.tax_inclusive ||
           line.discount_kind !== "none" ||
           Number(line.free_quantity || 0) > 0,
       ));
   $("readbackButton").disabled =
-    !rows.length || !hindiTranscript || Boolean(advancedOrder);
+    !complete || hasOpenQuestions || !hindiTranscript || Boolean(advancedOrder);
   const readbackHint = $("readbackHint");
   readbackHint.hidden = !rows.length || !hindiTranscript || !advancedOrder;
 }
@@ -1250,15 +1291,18 @@ $("readbackButton").addEventListener("click", async () => {
   button.disabled = true;
   button.textContent = "Preparing read-back…";
   try {
-    const items = getReadbackItems();
+    const draft = getReadbackDraft();
+    const items = draft ? null : getReadbackItems();
     const gstPercent = getReadbackTaxRate();
-    if (gstPercent === null) {
+    if (!draft && gstPercent === null) {
       throw new Error("Read-back is unavailable when item tax rates differ.");
     }
     const response = await fetch("/api/orders/readback", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, gst_percent: gstPercent }),
+      body: JSON.stringify(
+        draft ? { draft } : { items, gst_percent: gstPercent },
+      ),
     });
     if (!response.ok) {
       const body = await response.json();

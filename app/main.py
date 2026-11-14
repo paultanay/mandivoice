@@ -15,7 +15,11 @@ from app.billing import calculate_bill, calculate_order
 from app.gnani import GnaniAPIError, synthesize_hindi, transcribe_audio
 from app.order_extractor import OrderExtractionError, extract_order
 from app.order_models import OrderDraft
-from app.order_parser import build_hindi_readback, parse_order
+from app.order_parser import (
+    build_hindi_order_readback,
+    build_hindi_readback,
+    parse_order,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR.parent / ".env")
@@ -61,7 +65,8 @@ class BillRequest(BaseModel):
 
 
 class ReadbackRequest(BaseModel):
-    items: list[LineItem] = Field(max_length=50)
+    draft: OrderDraft | None = None
+    items: list[LineItem] | None = Field(default=None, max_length=50)
     gst_percent: str = Field(default="0", max_length=12)
 
 
@@ -170,10 +175,15 @@ async def order_readback(request: ReadbackRequest) -> Response:
             detail="Set GNANI_API_KEY in your environment to enable voice confirmation.",
         )
     try:
-        text = build_hindi_readback(
-            [item.model_dump() for item in request.items],
-            gst_percent=request.gst_percent,
-        )
+        if request.draft is not None:
+            text = build_hindi_order_readback(request.draft)
+        elif request.items is not None:
+            text = build_hindi_readback(
+                [item.model_dump() for item in request.items],
+                gst_percent=request.gst_percent,
+            )
+        else:
+            raise ValueError("Provide a reviewed order draft or line items")
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
     try:

@@ -376,6 +376,49 @@ def test_hindi_readback_uses_reviewed_values_and_returns_wav(monkeypatch):
     assert response.content == b"RIFFtest-wav"
 
 
+def test_hindi_readback_uses_order_calculation_for_mixed_units(monkeypatch):
+    draft = _interpreted_rice_draft()
+    paneer = draft.lines[0].model_copy(
+        update={
+            "name": "paneer",
+            "quantity": "250",
+            "unit": "g",
+            "price_unit": "kg",
+            "unit_price": "50",
+        }
+    )
+    bread = paneer.model_copy(
+        update={
+            "name": "brown bread",
+            "quantity": "1",
+            "unit": "packet",
+            "price_unit": "packet",
+            "unit_price": "40",
+        }
+    )
+    draft.lines = [paneer, bread]
+
+    async def fake_synthesize(text, api_key):
+        assert "दो सौ पचास ग्राम paneer" in text
+        assert "पचास रुपये प्रति किलो" in text
+        assert "बारह रुपये पचास पैसे" in text
+        assert "एक पैकेट brown bread" in text
+        assert "कुल देय बावन रुपये पचास पैसे" in text
+        assert api_key == "test-key"
+        return b"RIFFtest-wav"
+
+    monkeypatch.setenv("GNANI_API_KEY", "test-key")
+    monkeypatch.setattr("app.main.synthesize_hindi", fake_synthesize)
+    response = client.post(
+        "/api/orders/readback",
+        json={"draft": draft.model_dump()},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/wav"
+    assert response.content == b"RIFFtest-wav"
+
+
 def test_hindi_readback_requires_api_key(monkeypatch):
     monkeypatch.delenv("GNANI_API_KEY", raising=False)
     response = client.post(
