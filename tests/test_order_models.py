@@ -1,3 +1,5 @@
+import pytest
+
 from app.billing import calculate_order
 from app.order_models import OrderDraft
 
@@ -91,6 +93,7 @@ def test_calculates_multi_item_order_with_shared_tax():
             "customer_gstin": None,
             "customer_gstin_evidence": None,
             "clarifications": [],
+            "unsupported_requests": [],
         }
     )
 
@@ -146,6 +149,7 @@ def test_blocks_calculation_when_a_line_lacks_amount_evidence():
             "customer_gstin": None,
             "customer_gstin_evidence": None,
             "clarifications": [],
+            "unsupported_requests": [],
         }
     )
 
@@ -178,9 +182,141 @@ def _draft_with_line(line, **overrides):
         "customer_gstin": None,
         "customer_gstin_evidence": None,
         "clarifications": [],
+        "unsupported_requests": [],
     }
     data.update(overrides)
     return OrderDraft.model_validate(data)
+
+
+def test_normalizes_numeric_quantity_when_model_repeats_its_unit():
+    draft = _draft_with_line(
+        {
+            "name": "paneer",
+            "name_evidence": "paneer",
+            "quantity": "250 g",
+            "quantity_evidence": "250 gram paneer",
+            "unit": "g",
+            "unit_evidence": "gram",
+            "pack_size": "",
+            "pack_size_evidence": None,
+            "unit_price": None,
+            "unit_price_evidence": None,
+            "price_basis": "unit",
+            "tax_rate_percent": None,
+            "tax_evidence": None,
+            "tax_inclusive": False,
+            "discount_kind": "none",
+            "discount_value": None,
+            "discount_evidence": None,
+            "free_quantity": "",
+            "free_quantity_evidence": None,
+            "source_quote": "250 gram paneer",
+        }
+    )
+
+    assert draft.lines[0].quantity == "250"
+    assert draft.lines[0].unit == "g"
+    assert draft.lines[0].pack_size is None
+    assert draft.lines[0].free_quantity == "0"
+    with pytest.raises(ValueError, match="missing its quantity or price"):
+        calculate_order(draft)
+
+
+def test_discards_non_numeric_extractions_instead_of_forwarding_them_to_billing():
+    draft = _draft_with_line(
+        {
+            "name": "rice",
+            "name_evidence": "rice",
+            "quantity": "Evidence: rice",
+            "quantity_evidence": None,
+            "unit": "kg",
+            "unit_evidence": None,
+            "pack_size": None,
+            "pack_size_evidence": None,
+            "unit_price": "not stated",
+            "unit_price_evidence": None,
+            "price_basis": "unit",
+            "tax_rate_percent": None,
+            "tax_evidence": None,
+            "tax_inclusive": False,
+            "discount_kind": "none",
+            "discount_value": None,
+            "discount_evidence": None,
+            "free_quantity": 'Evidence: "rice"',
+            "free_quantity_evidence": None,
+            "source_quote": "rice",
+        }
+    )
+
+    assert draft.lines[0].quantity is None
+    assert draft.lines[0].unit_price is None
+    assert draft.lines[0].free_quantity == "0"
+
+
+def test_calculates_box_quantity_at_a_per_piece_price():
+    draft = _draft_with_line(
+        {
+            "name": "Classmate notebooks",
+            "name_evidence": "Classmate notebooks",
+            "quantity": "15",
+            "quantity_evidence": "15 box",
+            "unit": "box",
+            "unit_evidence": "box",
+            "price_unit": "piece",
+            "price_unit_evidence": "32 rupay per piece",
+            "pack_size": "50 pieces per box",
+            "pack_size_evidence": "50 piece in every box",
+            "unit_price": "32",
+            "unit_price_evidence": "32 rupay per piece",
+            "price_basis": "unit",
+            "tax_rate_percent": None,
+            "tax_evidence": None,
+            "tax_inclusive": False,
+            "discount_kind": "none",
+            "discount_value": None,
+            "discount_evidence": None,
+            "free_quantity": "0",
+            "free_quantity_evidence": None,
+            "source_quote": "15 box notebooks, 50 pieces per box, 32 rupay per piece",
+        }
+    )
+
+    result = calculate_order(draft)
+
+    assert result["subtotal"] == "24000.00"
+
+
+def test_deducts_explicit_free_units_from_the_billable_quantity():
+    draft = _draft_with_line(
+        {
+            "name": "soap",
+            "name_evidence": "soap",
+            "quantity": "50",
+            "quantity_evidence": "50 soap",
+            "unit": "piece",
+            "unit_evidence": "soap",
+            "pack_size": None,
+            "pack_size_evidence": None,
+            "unit_price": "10",
+            "unit_price_evidence": "10 rupees per soap",
+            "price_basis": "unit",
+            "tax_rate_percent": None,
+            "tax_evidence": None,
+            "tax_inclusive": False,
+            "discount_kind": "none",
+            "discount_value": None,
+            "discount_evidence": None,
+            "free_quantity": "5",
+            "free_quantity_evidence": "every 10 soap gets 1 free",
+            "source_quote": "50 soap, 10 rupees each, every 10 soap gets 1 free",
+        }
+    )
+
+    result = calculate_order(draft)
+
+    assert result["subtotal"] == "450.00"
+    assert result["lines"][0]["quantity"] == "50"
+    assert result["lines"][0]["free_quantity"] == "5"
 
 
 def test_calculates_tax_inclusive_line_price_after_line_and_order_discounts():
@@ -248,8 +384,8 @@ def test_applies_free_quantity_without_charging_for_free_items():
     result = calculate_order(draft)
 
     assert result["lines"][0]["free_quantity"] == "5"
-    assert result["subtotal"] == "500.00"
-    assert result["gross_due"] == "590.00"
+    assert result["subtotal"] == "450.00"
+    assert result["gross_due"] == "531.00"
 
 
 def test_calculates_charge_return_previous_balance_payment_and_roundoff():

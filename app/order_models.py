@@ -1,12 +1,62 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+_NUMERIC_FIELDS = {
+    "quantity",
+    "unit_price",
+    "tax_rate_percent",
+    "discount_value",
+    "free_quantity",
+    "amount",
+    "default_tax_rate_percent",
+    "order_discount_value",
+    "previous_balance",
+}
 
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_extracted_values(cls, values):
+        if not isinstance(values, dict):
+            return values
+        values = values.copy()
+        unit = values.get("unit")
+        for key in _NUMERIC_FIELDS.intersection(values):
+            value = values[key]
+            if key == "free_quantity" and value in (None, ""):
+                values[key] = "0"
+                continue
+            if value is None:
+                continue
+            text = str(value).strip().replace("₹", "").replace(",", "")
+            if key == "quantity" and unit:
+                match = re.fullmatch(
+                    rf"([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s+{re.escape(str(unit))}",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+                if match:
+                    text = match.group(1)
+            if text and not re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", text):
+                if key == "free_quantity" and not values.get("free_quantity_evidence"):
+                    values[key] = "0"
+                else:
+                    values[key] = None
+            else:
+                values[key] = text or None
+        if isinstance(values.get("pack_size"), str) and not values["pack_size"].strip():
+            values["pack_size"] = None
+        for key in ("unit", "price_unit"):
+            if isinstance(values.get(key), str) and not values[key].strip():
+                values[key] = None
+        return values
 
 
 AdjustmentKind = Literal["none", "percent", "amount"]
@@ -19,6 +69,8 @@ class OrderLine(StrictModel):
     quantity_evidence: str | None
     unit: str | None
     unit_evidence: str | None
+    price_unit: str | None = None
+    price_unit_evidence: str | None = None
     pack_size: str | None
     pack_size_evidence: str | None
     unit_price: str | None
@@ -77,3 +129,4 @@ class OrderDraft(StrictModel):
     customer_gstin: str | None
     customer_gstin_evidence: str | None
     clarifications: list[str] = Field(max_length=30)
+    unsupported_requests: list[str] = Field(max_length=20)

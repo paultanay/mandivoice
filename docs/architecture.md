@@ -6,8 +6,8 @@ MandiVoice is a local web app with a FastAPI server. The browser captures audio 
 
 1. The browser records up to 30 seconds of audio or accepts an audio file.
 2. It uploads the recording to `/api/transcribe`. The server reads `GNANI_API_KEY` and forwards the audio to Gnani Prisma v3.
-3. The browser displays the transcript and submits the text to `/api/orders/interpret`. The server reads `GROQ_API_KEY`, requests a strict structured response, and validates the result as an `OrderDraft`.
-4. The draft includes a short transcript quote for each extracted value. The server checks quotes against the transcript and returns an issue instead of a total when required evidence is absent or a field is incomplete.
+3. The browser displays the transcript and submits the text to `/api/orders/interpret`. The server reads `GROQ_API_KEY`, requests a strict structured response, and validates the result as an `OrderDraft`. After a recognized strict-generation failure, it retries once and then falls back to JSON mode with the schema included in the prompt. The fallback still has to pass local validation.
+4. The draft includes a short transcript quote for each extracted value. The server drops item lines whose name or source quote cannot be found in the transcript, and it asks for missing bill-critical values. The calculate request checks the remaining field evidence and returns an issue instead of a total when evidence is absent or a field is incomplete.
 5. The merchant reviews the displayed values and edits the draft. A separate calculate request uses the reviewed values and requires explicit confirmation. Arithmetic is performed locally by the server; the language model does not calculate totals.
 6. For simple Hindi orders, `/api/orders/readback` can produce a Timbre Hindi audio read-back.
 
@@ -20,6 +20,8 @@ Money is represented with `Decimal`, rounded to two places using half-up roundin
 ## Reliability boundary
 
 Groq strict structured output constrains the response shape. It does not prove the model interpreted a phrase correctly. An evidence quote can also be valid while the selected interpretation is wrong. The interface therefore keeps the transcript visible, shows source phrases, requires human confirmation, and provides manual entry. It cannot promise 100% interpretation accuracy for arbitrary accents, code-mixing, noisy recordings, or ambiguous orders.
+
+Groq can rate limit output tokens independently of request count. MandiVoice waits once for a short `Retry-After` response and then retries. Longer limits return a clear message so the merchant can retry later. The checked-in transcript benchmark records expected fields and clarifications for supplied Hinglish cases and examples in the other Prisma-supported Indian languages; run it separately from the offline test suite.
 
 ## Secrets and recordings
 

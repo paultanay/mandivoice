@@ -83,9 +83,7 @@ function updateReviewControls() {
   const complete = rows.length > 0 && rows.every((row) =>
     [...row.querySelectorAll("input")].every((input) => input.value.trim()),
   );
-  const hasOpenQuestions = Boolean(
-    activeOrderDraft?.clarifications?.length || interpretationIssues.length,
-  );
+  const hasOpenQuestions = Boolean(activeOrderDraft?.clarifications?.length);
   $("calculateButton").disabled = !complete || !$("confirmOrder").checked || hasOpenQuestions;
   const hindiTranscript = detectedLanguageCode === "hi-IN" || /[\u0900-\u097f]/.test(transcriptField.value);
   const advancedOrder = activeOrderDraft && (
@@ -317,7 +315,8 @@ $("addItemButton").addEventListener("click", () => {
   if (activeOrderDraft) {
     activeOrderDraft.lines.push({
       name: "", name_evidence: "", quantity: "", quantity_evidence: null, unit: null,
-      unit_evidence: null, pack_size: null, pack_size_evidence: null, unit_price: "",
+      unit_evidence: null, price_unit: null, price_unit_evidence: null,
+      pack_size: null, pack_size_evidence: null, unit_price: "",
       unit_price_evidence: null, price_basis: "unit", tax_rate_percent: null,
       tax_evidence: null, tax_inclusive: false, discount_kind: "none",
       discount_value: null, discount_evidence: null, free_quantity: "0",
@@ -435,8 +434,8 @@ function showOrderDetails(body) {
   list.className = "order-detail-list";
   const draft = body.draft;
   for (const [index, line] of draft.lines.entries()) {
-    const unitPrice = line.price_basis === "line_total" ? "line total" : `per ${line.price_basis || "unit"}`;
-    let description = `${line.name}: ${line.quantity ?? "quantity missing"} ${line.unit || ""} at ₹${line.unit_price ?? "price missing"} ${unitPrice}`;
+    const priceUnit = line.price_unit || line.unit || "unit";
+    let description = `${line.name}: ${line.quantity ?? "quantity missing"} ${line.unit || ""} at ₹${line.unit_price ?? "price missing"} per ${line.price_basis === "line_total" ? "line" : priceUnit}`;
     if (line.pack_size) description += `; pack size ${line.pack_size}`;
     if (line.tax_rate_percent !== null) description += `; GST ${line.tax_rate_percent}%${line.tax_inclusive ? " included" : " added"}`;
     else if (draft.default_tax_rate_percent !== null) description += `; GST ${draft.default_tax_rate_percent}%`;
@@ -444,6 +443,7 @@ function showOrderDetails(body) {
     if (Number(line.free_quantity || 0) > 0) description += `; ${line.free_quantity} free`;
     appendOrderDetail(list, description, line.source_quote, [
       ["Unit", line.unit, (value) => { line.unit = value; }],
+      ["Price unit", line.price_unit, (value) => { line.price_unit = value; }],
       ["Package size", line.pack_size, (value) => { line.pack_size = value; }],
       ["Price basis", line.price_basis, (value) => { line.price_basis = value; }, { choices: [
         { value: "unit", label: "Per unit" }, { value: "pack", label: "Per pack" }, { value: "line_total", label: "Line total" },
@@ -517,6 +517,17 @@ function showOrderDetails(body) {
     issues.className = "order-issues";
     for (const question of [...draft.clarifications, ...interpretationIssues]) appendOrderDetail(issues, question);
     panel.append(issues);
+  }
+  if (draft.unsupported_requests.length) {
+    const unsupported = document.createElement("section");
+    unsupported.className = "unsupported-requests";
+    const label = document.createElement("strong");
+    label.textContent = "This app cannot perform these requests";
+    unsupported.append(label);
+    const list = document.createElement("ul");
+    for (const request of draft.unsupported_requests) appendOrderDetail(list, request);
+    unsupported.append(list);
+    panel.append(unsupported);
   }
   if (draft.clarifications.length || interpretationIssues.length) {
     const manual = document.createElement("button");
@@ -612,6 +623,7 @@ async function calculateBill() {
       return {
         ...(original || {
           name_evidence: "", quantity_evidence: null, unit: null, unit_evidence: null,
+          price_unit: null, price_unit_evidence: null,
           pack_size: null, pack_size_evidence: null, unit_price_evidence: null,
           price_basis: "unit", tax_rate_percent: null, tax_evidence: null,
           tax_inclusive: false, discount_kind: "none", discount_value: null,

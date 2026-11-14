@@ -152,7 +152,7 @@ def test_health_reports_configuration_without_disclosing_key(monkeypatch):
     assert "private-test-key" not in response.text
 
 
-def _interpreted_rice_draft(clarifications=None):
+def _interpreted_rice_draft(clarifications=None, unsupported_requests=None):
     return OrderDraft.model_validate(
         {
             "language_code": "en-IN",
@@ -197,6 +197,7 @@ def _interpreted_rice_draft(clarifications=None):
             "customer_gstin": None,
             "customer_gstin_evidence": None,
             "clarifications": clarifications or [],
+            "unsupported_requests": unsupported_requests or [],
         }
     )
 
@@ -251,6 +252,30 @@ def test_order_interpret_never_calculates_with_open_clarifications(monkeypatch):
     assert response.status_code == 200
     assert response.json()["status"] == "needs_clarification"
     assert response.json()["calculation"] is None
+
+
+def test_order_interpret_reports_unsupported_actions_without_claiming_completion(
+    monkeypatch,
+):
+    from app import main
+
+    monkeypatch.setenv("GROQ_API_KEY", "private-groq-key")
+
+    async def fake_extract_order(transcript, api_key, model):
+        return _interpreted_rice_draft(
+            unsupported_requests=["Sending an invoice over WhatsApp is unavailable."]
+        )
+
+    monkeypatch.setattr(main, "extract_order", fake_extract_order)
+    response = client.post(
+        "/api/orders/interpret", json={"transcript": "2 kg rice at 60"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["draft"]["unsupported_requests"] == [
+        "Sending an invoice over WhatsApp is unavailable."
+    ]
+    assert response.json()["calculation"]["gross_due"] == "120.00"
 
 
 def test_order_calculate_requires_review_confirmation():

@@ -4,6 +4,7 @@ import json
 import httpx
 import pytest
 
+from app.billing import calculate_order
 from app.order_extractor import OrderExtractionError, _strict_schema, extract_order
 
 ORDER_TRANSCRIPT = "दस किलो दाल, एक सौ पैंतीस रुपये किलो, पाँच प्रतिशत GST"
@@ -11,7 +12,7 @@ ORDER_TRANSCRIPT = "दस किलो दाल, एक सौ पैंती
 
 def test_groq_schema_uses_strict_supported_shape():
     schema = _strict_schema()
-    unsupported = {"minLength", "maxLength", "minItems", "maxItems", "const"}
+    unsupported = {"minLength", "maxLength", "minItems", "maxItems", "const", "default"}
 
     def inspect(value):
         if isinstance(value, dict):
@@ -73,6 +74,7 @@ def _response_body():
         "customer_gstin": None,
         "customer_gstin_evidence": None,
         "clarifications": [],
+        "unsupported_requests": [],
     }
 
 
@@ -128,6 +130,346 @@ def test_rejects_groq_error_without_echoing_response_body(monkeypatch):
         asyncio.run(extract_order(ORDER_TRANSCRIPT, "groq-test-key", "test-model"))
 
     assert "secret diagnostic payload" not in str(error.value)
+
+
+def test_explains_groq_bad_request_without_exposing_credentials(monkeypatch):
+    async def handler(request):
+        return httpx.Response(
+            400,
+            json={"error": {"message": "Schema rejected for credential secret-key"}},
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    with pytest.raises(OrderExtractionError) as error:
+        asyncio.run(extract_order(ORDER_TRANSCRIPT, "secret-key", "test-model"))
+
+    assert "HTTP 400" in str(error.value)
+    assert "Schema rejected" in str(error.value)
+    assert "secret-key" not in str(error.value)
+
+
+def test_retries_once_after_groq_rate_limit(monkeypatch):
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(_response_body(), ensure_ascii=False)
+                        }
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    draft = asyncio.run(extract_order(ORDER_TRANSCRIPT, "groq-test-key", "test-model"))
+
+    assert draft.lines[0].unit_price == "135"
+    assert calls == 2
+
+
+def test_rate_limit_error_shows_retry_delay(monkeypatch):
+    async def skip_wait(_seconds):
+        return None
+
+    monkeypatch.setattr("app.order_extractor.asyncio.sleep", skip_wait)
+
+    async def handler(request):
+        return httpx.Response(429, headers={"Retry-After": "40"})
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    with pytest.raises(OrderExtractionError) as error:
+        asyncio.run(extract_order(ORDER_TRANSCRIPT, "groq-test-key", "test-model"))
+
+    assert "rate limited" in str(error.value).lower()
+    assert "40 seconds" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "provider_message",
+    [
+        "Failed to generate JSON. Please adjust your prompt.",
+        "Generated JSON does not match the expected schema.",
+    ],
+)
+def test_retries_transient_strict_json_generation_failure(
+    monkeypatch, provider_message
+):
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": provider_message,
+                        "failed_generation": "{",
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(_response_body(), ensure_ascii=False)
+                        }
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    draft = asyncio.run(extract_order(ORDER_TRANSCRIPT, "groq-test-key", "test-model"))
+
+    assert draft.lines[0].unit_price == "135"
+    assert calls == 2
+
+
+def test_falls_back_to_validated_json_mode_after_strict_generation_retries(monkeypatch):
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        body = json.loads(await request.aread())
+        if calls <= 2:
+            assert body["response_format"]["type"] == "json_schema"
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": "Failed to generate JSON. Please adjust your prompt."
+                    }
+                },
+            )
+        assert body["response_format"]["type"] == "json_object"
+        assert "JSON Schema" in body["messages"][0]["content"]
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(_response_body(), ensure_ascii=False)
+                        }
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    draft = asyncio.run(extract_order(ORDER_TRANSCRIPT, "groq-test-key", "test-model"))
+
+    assert draft.lines[0].unit_price == "135"
+    assert calls == 3
+
+
+def test_drops_model_lines_without_verbatim_item_evidence(monkeypatch):
+    body = _response_body()
+    body["lines"][0].update(
+        {
+            "name": "E",
+            "name_evidence": "E",
+            "quantity_evidence": "E",
+            "unit_price_evidence": "E",
+            "source_quote": "E",
+        }
+    )
+
+    async def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps(body, ensure_ascii=False)}}
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    draft = asyncio.run(extract_order(ORDER_TRANSCRIPT, "groq-test-key", "test-model"))
+
+    assert draft.lines == []
+    assert any("couldn't verify" in item.casefold() for item in draft.clarifications)
+
+
+def test_adds_missing_price_question_and_discards_unpriced_price_basis(monkeypatch):
+    body = _response_body()
+    body["lines"][0].update(
+        {
+            "name": "paneer",
+            "name_evidence": "paneer",
+            "quantity": "250",
+            "quantity_evidence": "250 gram",
+            "unit": "g",
+            "unit_evidence": "gram",
+            "price_unit": "g",
+            "price_unit_evidence": "250 gram",
+            "unit_price": None,
+            "unit_price_evidence": None,
+            "price_basis": "unit",
+            "source_quote": "250 gram paneer",
+        }
+    )
+    body["lines"] = [body["lines"][0]]
+    body["default_tax_rate_percent"] = None
+    body["tax_evidence"] = None
+
+    async def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps(body, ensure_ascii=False)}}
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    draft = asyncio.run(extract_order("250 gram paneer", "groq-test-key", "test-model"))
+
+    assert len(draft.clarifications) == 1
+    assert "paneer" in draft.clarifications[0].casefold()
+    assert "price" in draft.clarifications[0].casefold()
+    assert draft.lines[0].price_unit is None
+    assert draft.lines[0].price_basis is None
+
+
+def test_recovers_numeric_tax_from_verbatim_multilingual_evidence(monkeypatch):
+    body = _response_body()
+    body["default_tax_rate_percent"] = None
+    body["tax_evidence"] = "કુલ પર 5 ટકા GST ઉમેરો"
+    body["lines"] = [body["lines"][0].copy(), body["lines"][0].copy()]
+    body["lines"][0]["name"] = "ચોખા"
+    body["lines"][0]["name_evidence"] = "ચોખા"
+    body["lines"][0]["quantity"] = "2"
+    body["lines"][0]["unit_price"] = "60"
+    body["lines"][0]["quantity_evidence"] = "બે કિલો"
+    body["lines"][0]["unit_evidence"] = "કિલો"
+    body["lines"][0]["unit_price_evidence"] = "60 રૂપિયા કિલો"
+    body["lines"][0]["price_unit"] = "kg"
+    body["lines"][0]["price_unit_evidence"] = "60 રૂપિયા કિલો"
+    body["lines"][0]["source_quote"] = "બે કિલો ચોખા 60 રૂપિયા કિલો"
+    body["lines"][1]["name"] = "દાળ"
+    body["lines"][1]["name_evidence"] = "દાળ"
+    body["lines"][1]["quantity"] = "5"
+    body["lines"][1]["unit_price"] = "120"
+    body["lines"][1]["quantity_evidence"] = "પાંચ કિલો"
+    body["lines"][1]["unit_evidence"] = "કિલો"
+    body["lines"][1]["unit_price_evidence"] = "120 રૂપિયા કિલો"
+    body["lines"][1]["price_unit"] = "kg"
+    body["lines"][1]["price_unit_evidence"] = "120 રૂપિયા કિલો"
+    body["lines"][1]["source_quote"] = "પાંચ કિલો દાળ 120 રૂપિયા કિલો"
+    transcript = (
+        "બે કિલો ચોખા 60 રૂપિયા કિલો અને પાંચ કિલો દાળ 120 રૂપિયા કિલો. "
+        "કુલ પર 5 ટકા GST ઉમેરો."
+    )
+
+    async def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps(body, ensure_ascii=False)}}
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    draft = asyncio.run(extract_order(transcript, "groq-test-key", "test-model"))
+
+    assert draft.default_tax_rate_percent == "5"
+    assert calculate_order(draft, transcript=transcript)["gross_due"] == "756.00"
+
+
+def test_asks_for_tax_rate_when_tax_was_requested_but_rate_is_missing(monkeypatch):
+    body = _response_body()
+    body["default_tax_rate_percent"] = None
+    body["tax_evidence"] = "GST lagao"
+
+    async def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps(body, ensure_ascii=False)}}
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.order_extractor.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+
+    draft = asyncio.run(extract_order(ORDER_TRANSCRIPT, "groq-test-key", "test-model"))
+
+    assert len(draft.clarifications) == 1
+    assert "gst" in draft.clarifications[0].casefold()
+    assert "rate" in draft.clarifications[0].casefold()
 
 
 def test_rejects_malformed_model_output(monkeypatch):

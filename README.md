@@ -63,6 +63,16 @@ node --check app/static/app.js
 
 The automated tests use local fixtures and mocked Gnani responses; they do not require an API call. See [architecture and data handling](docs/architecture.md) for request flow, rounding, and privacy boundaries.
 
+## Transcript benchmark
+
+`benchmarks/retail_orders.jsonl` contains the supplied Hinglish edge cases plus short order transcripts in Bengali, Gujarati, Kannada, Malayalam, Marathi, Punjabi, Tamil, and Telugu. Run a live model check after configuring Groq:
+
+```bash
+.venv/bin/python scripts/evaluate_orders.py
+```
+
+The evaluator checks selected extracted fields, clarifications, unsupported requests, and totals. It uses Groq and may pause when the account reaches its output-token limit. It is a regression aid, not proof of accuracy for every accent or order.
+
 ## Privacy
 
 Audio submitted for transcription and read-back requests is sent to Gnani. Transcript text, which can contain product, customer, payment, or tax details, is sent to Groq for interpretation. Review both providers' data policies before using real customer information. MandiVoice does not retain recordings or bills in a database. Do not commit `.env`, customer recordings, or personal data. Use a synthetic order for a public demo.

@@ -1,3 +1,4 @@
+import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
@@ -6,6 +7,29 @@ from app.order_models import OrderDraft
 _CENT = Decimal("0.01")
 _MAX_ITEMS = 50
 _MAX_AMOUNT = Decimal(100000000)
+_UNIT_FACTORS = {
+    "g": ("mass", Decimal(1)),
+    "gram": ("mass", Decimal(1)),
+    "grams": ("mass", Decimal(1)),
+    "kg": ("mass", Decimal(1000)),
+    "kilo": ("mass", Decimal(1000)),
+    "kilos": ("mass", Decimal(1000)),
+    "kilogram": ("mass", Decimal(1000)),
+    "kilograms": ("mass", Decimal(1000)),
+    "ml": ("volume", Decimal(1)),
+    "milliliter": ("volume", Decimal(1)),
+    "millilitre": ("volume", Decimal(1)),
+    "l": ("volume", Decimal(1000)),
+    "litre": ("volume", Decimal(1000)),
+    "liter": ("volume", Decimal(1000)),
+    "liters": ("volume", Decimal(1000)),
+    "litres": ("volume", Decimal(1000)),
+    "piece": ("count", Decimal(1)),
+    "pieces": ("count", Decimal(1)),
+    "pc": ("count", Decimal(1)),
+    "pcs": ("count", Decimal(1)),
+    "dozen": ("count", Decimal(12)),
+}
 
 
 def _amount(value: Any, field: str) -> Decimal:
@@ -124,6 +148,39 @@ def _require_evidence(quote: str | None, transcript: str, field: str) -> None:
         raise ValueError(f"Could not verify transcript evidence for {field}")
 
 
+def _unit_factor(source: str, target: str) -> Decimal | None:
+    if source.casefold().strip() == target.casefold().strip():
+        return Decimal(1)
+    source_unit = _UNIT_FACTORS.get(source.casefold().strip())
+    target_unit = _UNIT_FACTORS.get(target.casefold().strip())
+    if source_unit is None or target_unit is None or source_unit[0] != target_unit[0]:
+        return None
+    return source_unit[1] / target_unit[1]
+
+
+def _pack_factor(
+    pack_size: str | None, ordered_unit: str, price_unit: str
+) -> Decimal | None:
+    if not pack_size:
+        return None
+    match = re.fullmatch(
+        r"\s*(\d+(?:\.\d+)?)\s*([A-Za-z]+)(?:\s+(?:per|/)\s*([A-Za-z]+))?\s*",
+        pack_size,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    count, contained_unit, outer_unit = match.groups()
+    if _unit_factor(contained_unit, price_unit) != Decimal(1):
+        return None
+    if outer_unit and _unit_factor(outer_unit, ordered_unit) != Decimal(1):
+        return None
+    try:
+        return Decimal(count)
+    except InvalidOperation:
+        return None
+
+
 def _adjustment_amount(amount: Decimal, kind: str, value: Any, field: str) -> Decimal:
     if kind == "none":
         return Decimal(0)
@@ -155,6 +212,12 @@ def calculate_order(draft: OrderDraft, transcript: str | None = None) -> dict[st
             )
             if line.unit is not None:
                 _require_evidence(line.unit_evidence, transcript, f"item {index} unit")
+            if line.price_unit is not None:
+                _require_evidence(
+                    line.price_unit_evidence,
+                    transcript,
+                    f"item {index} price unit",
+                )
             _require_evidence(
                 line.unit_price_evidence, transcript, f"item {index} price"
             )
@@ -215,9 +278,30 @@ def calculate_order(draft: OrderDraft, transcript: str | None = None) -> dict[st
         quantity = _amount(line.quantity, f"Item {index} quantity")
         unit_price = _nonnegative(line.unit_price, f"Item {index} price")
         free_quantity = _nonnegative(line.free_quantity, f"Item {index} free quantity")
-        amount = (
-            unit_price if line.price_basis == "line_total" else quantity * unit_price
-        )
+        if free_quantity > quantity:
+            raise ValueError(
+                f"Item {index} free quantity cannot exceed ordered quantity"
+            )
+        billable_quantity = quantity - free_quantity
+        if line.price_basis == "line_total":
+            if free_quantity:
+                raise ValueError(
+                    f"Item {index} needs a unit or pack price to account for free items"
+                )
+            amount = unit_price
+        elif line.price_basis == "pack":
+            amount = billable_quantity * unit_price
+        else:
+            ordered_unit = line.unit or "unit"
+            price_unit = line.price_unit or ordered_unit
+            factor = _unit_factor(ordered_unit, price_unit)
+            if factor is None:
+                factor = _pack_factor(line.pack_size, ordered_unit, price_unit)
+            if factor is None:
+                raise ValueError(
+                    f"Item {index} price unit cannot be converted to its ordered unit"
+                )
+            amount = billable_quantity * factor * unit_price
         if amount > _MAX_AMOUNT:
             raise ValueError(f"Item {index} amount exceeds the supported range")
         rate = _rate(
@@ -263,6 +347,8 @@ def calculate_order(draft: OrderDraft, transcript: str | None = None) -> dict[st
                 "quantity": format(quantity.normalize(), "f"),
                 "free_quantity": format(free_quantity.normalize(), "f"),
                 "unit": line.unit or "",
+                "price_unit": line.price_unit or line.unit or "",
+                "pack_size": line.pack_size or "",
                 "unit_price": _format(unit_price),
                 "tax_rate_percent": format(rate.normalize(), "f"),
                 "taxable_amount": _format(taxable),
