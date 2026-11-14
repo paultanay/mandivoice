@@ -242,7 +242,7 @@ function addLineItem(item = {}) {
   lineItems.append(row);
   return row;
 }
-function showEmptyItems() { lineItems.innerHTML = '<div class="empty-items">No items yet. Use a transcript or add the items below.</div>'; }
+function showEmptyItems() { lineItems.innerHTML = '<div class="empty-items">No items yet. Use a transcript or click “Add an item” below.</div>'; }
 showEmptyItems();
 
 $("addItemButton").addEventListener("click", () => {
@@ -275,6 +275,9 @@ async function calculateBill() {
   const items = [...lineItems.querySelectorAll(".item-row")].map((row) => Object.fromEntries(
     [...row.querySelectorAll("input")].map((input) => [input.dataset.key, input.value.trim()]),
   ));
+  if (!items.length) {
+    throw new Error("Add an item first. Enter its quantity and price, then calculate the bill.");
+  }
   const response = await fetch("/api/bills/calculate", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ items, gst_percent: $("gstRate").value || "0" }),
@@ -284,15 +287,16 @@ async function calculateBill() {
   $("subtotal").textContent = formatRupees(body.subtotal);
   $("gstAmount").textContent = formatRupees(body.gst_amount);
   $("total").textContent = formatRupees(body.total);
+  showMessage($("billMessage"), "");
 }
 $("calculateButton").addEventListener("click", async () => {
   const button = $("calculateButton"); button.disabled = true;
   try {
     await calculateBill(); button.querySelector("span").textContent = "✓";
     window.setTimeout(() => { button.querySelector("span").textContent = "→"; }, 1200);
-  } catch (error) { showMessage($("transcribeMessage"), error.message, true); }
+  } catch (error) { showMessage($("billMessage"), error.message, true); }
   finally { button.disabled = false; }
 });
 $("gstRate").addEventListener("change", () => {
-  if (lineItems.querySelector(".item-row")) calculateBill().catch((error) => showMessage($("transcribeMessage"), error.message, true));
+  if (lineItems.querySelector(".item-row")) calculateBill().catch((error) => showMessage($("billMessage"), error.message, true));
 });

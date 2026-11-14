@@ -4,3 +4,4 @@
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 
 .spinner{width:12px;height:12px;border:2px solid rgba(39,99,71,.22);border-top-color:var(--green);border-radius:50%;animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.button-primary.is-recording{background:#a64d37}
+.bill-message{margin-top:7px;text-align:center;color:#b14e36;font-size:10px;line-height:1.5}.bill-message:empty{display:none}

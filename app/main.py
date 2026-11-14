@@ -45,7 +45,7 @@ class ParseRequest(BaseModel):
 
 
 class BillRequest(BaseModel):
-    items: list[LineItem] = Field(min_length=1, max_length=50)
+    items: list[LineItem] = Field(max_length=50)
     gst_percent: str = Field(default="0", max_length=12)
 
 

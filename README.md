@@ -13,7 +13,7 @@ There is no payment flow, automatic invoice submission, or stored customer ledge
 - Calculate subtotal and optional GST with Python `Decimal` and standard half-up currency rounding.
 - Run on your own machine. The API key stays on the server.
 
-The item suggestion parser is intentionally narrow. It recognizes quantities and prices written in that order and does not translate a transcript into a full invoice. If a line is not recognized, enter it yourself. Speech recognition can mishear prices, so check the transcript and bill against the spoken order.
+The item suggestion parser is intentionally narrow. It recognizes quantities and prices written in English-style digits and phrasing; it does not yet turn Hindi number words into bill lines. If a line is not recognized, enter it yourself. Speech recognition can mishear prices, so check the transcript and bill against the spoken order.
 
 ## Requirements
 

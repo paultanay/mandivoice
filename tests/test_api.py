@@ -28,6 +28,16 @@ def test_calculate_endpoint_rejects_invalid_values():
     assert response.status_code == 422
 
 
+def test_calculate_endpoint_explains_when_bill_has_no_items():
+    response = client.post(
+        "/api/bills/calculate",
+        json={"items": [], "gst_percent": "5"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Add between 1 and 50 items"
+
+
 def test_transcription_without_key_returns_configuration_error(monkeypatch):
     monkeypatch.delenv("GNANI_API_KEY", raising=False)
     response = client.post(

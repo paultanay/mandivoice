@@ -89,6 +89,7 @@
             <div class="tax-row"><label for="gstRate">GST <span>optional</span></label><div class="tax-control"><input id="gstRate" type="number" min="0" max="100" step="0.01" value="0" inputmode="decimal"><span>%</span></div></div>
             <div class="bill-totals" aria-live="polite"><div><span>Subtotal</span><strong id="subtotal">₹0.00</strong></div><div><span>GST amount</span><strong id="gstAmount">₹0.00</strong></div><div class="grand-total"><span>Total due</span><strong id="total">₹0.00</strong></div></div>
             <button class="button button-dark calculate-button" id="calculateButton" type="button">Calculate bill <span aria-hidden="true">→</span></button>
+            <div class="bill-message" id="billMessage" role="status" aria-live="polite"></div>
             <p class="bill-footnote">Totals are calculated from the values you enter. This draft does not collect payment.</p>
           </div>
           <div class="review-check"><span class="check-mark" aria-hidden="true">✓</span><p><strong>Your review is the safeguard.</strong><br>Speech recognition can get a number wrong. Verify every item against what your customer asked for.</p></div>
