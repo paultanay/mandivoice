@@ -13,3 +13,4 @@ __pycache__/
 *.flac
 *.aac
 .ruff_cache/
+.worktrees/
