@@ -1,5 +1,7 @@
 # MandiVoice
 
+**One-page solution pitch:** [SOLUTION_PITCH.md](SOLUTION_PITCH.md)
+
 MandiVoice turns a spoken shop order into a bill draft that a shopkeeper can inspect before calculating. It combines Gnani Prisma transcription with a language model that structures multilingual order details, then uses ordinary decimal arithmetic for the bill.
 
 The transcript and extracted values are suggestions. Speech recognition can confuse item names, quantities, prices, or tax rates. The app requires an explicit review before it calculates a bill. It does not collect payment or save bill history.
